@@ -2348,12 +2348,19 @@ def get_contracts_map_for_onus(session, onu_keys):
     keys = list(set(onu_keys))
     key_set = set(keys)
 
-
-    from sqlalchemy import tuple_
+    # Совместимый с MySQL/SQLite фильтр по парам (device_id, interface):
+    # OR-цепочка AND-ов вместо tuple_().in_(), который на части СУБД молча
+    # возвращает меньше строк -> в списках виден только основной договор.
+    from sqlalchemy import and_, or_, tuple_
+    try:
+        _test_sql = str(tuple_(ONUContract.device_id, ONUContract.interface).in_(keys).compile())
+        pair_filter = tuple_(ONUContract.device_id, ONUContract.interface).in_(keys)
+    except Exception:
+        pair_filter = or_(*[and_(ONUContract.device_id == d, ONUContract.interface == i) for d, i in keys])
     links = session.query(
 ONUContract.device_id, ONUContract.interface,
 ONUContract.contract_number, ONUContract.is_main
-).filter(tuple_(ONUContract.device_id, ONUContract.interface).in_(keys)).all()
+).filter(pair_filter).all()
     found = {k: {'main': None, 'extra': []} for k in keys}
     for did, iface, cn, is_main in links:
         key = (did, iface)
@@ -2379,7 +2386,7 @@ ONUClientMAC.onu_interface, ONUClientMAC.normalized_mac
             candidates_by_key.setdefault(k, set()).add(nmac)
 
     onus_norm = session.query(ONU.device_id, ONU.interface, ONU.normalized_mac).filter(
-tuple_(ONU.device_id, ONU.interface).in_(keys), ONU.normalized_mac.isnot(None)
+pair_filter, ONU.normalized_mac.isnot(None)
 ).all()
     for did, iface, nmac in onus_norm:
         k = (did, iface)
@@ -2413,7 +2420,7 @@ Contract.normalized_mac, Contract.contract_number
 
 
     direct = session.query(ONU.device_id, ONU.interface, ONU.contract).filter(
-tuple_(ONU.device_id, ONU.interface).in_(keys)).all()
+pair_filter).all()
     for did, iface, cn in direct:
         k = (did, iface)
         if k not in key_set or not cn or cn == 'N/A':
