@@ -279,6 +279,13 @@
                                         <span class="badge bg-success" id="main-contract-text">
                                             {% if onu.contract %}{{ onu.contract }}{% else %}N/A{% endif %}
                                         </span>
+                                        {# Если на ONU более одного договора — показываем их столбиком бэджами #}
+                                        {% set extra_contracts = (onu.all_contracts or [])[1:] %}
+                                        <div class="d-flex flex-column align-items-start gap-1 mt-1" id="extra-contracts-list">
+                                            {% for cn in extra_contracts %}
+                                                <span class="badge bg-success">{{ cn }}</span>
+                                            {% endfor %}
+                                        </div>
                                         <button class="btn btn-sm btn-outline-info ms-2" onclick="loadAllContracts()"
                                                 title="Показать все договоры">
                                             <i class="bi bi-list"></i>

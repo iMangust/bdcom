@@ -145,7 +145,7 @@ const monitoring = {
 	},
 
     _contractCell(item) {
-        // Единый стандарт: договоры выводятся столбиками-badges (до 3 + «+N»).
+        // Единый стандарт: ВСЕ договоры выводятся бэджами столбиком (без ограничений и «+N»).
         // Логины/IP в списках ONU НЕ показываются.
         const list = (item && Array.isArray(item.all_contracts) && item.all_contracts.length)
             ? item.all_contracts
@@ -153,12 +153,9 @@ const monitoring = {
                 ? String(item.contract).split(',').map(s => s.trim()).filter(Boolean)
                 : []);
         if (!list.length) return '<span class="text-muted">\u2014</span>';
-        const shown = list.slice(0, 3);
-        let html = shown.map(cn => `<span class="badge bg-success">${escapeHtml(cn)}</span>`).join(' ');
-        if (list.length > 3) {
-            html += ` <span class="badge bg-primary" title="${escapeHtml(list.slice(3).join(', '))}">+${list.length - 3}</span>`;
-        }
-        return html;
+        return '<div class="d-flex flex-column align-items-start gap-1">' +
+            list.map(cn => `<span class="badge bg-success">${escapeHtml(cn)}</span>`).join('') +
+            '</div>';
     },
     _deviceBadges(item) {
         let badges = '';

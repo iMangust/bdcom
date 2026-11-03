@@ -402,13 +402,12 @@
                     <td>
                         {% set onu_contracts = onu.all_contracts or ([onu.contract] if onu.contract else []) %}
                         {% if onu_contracts %}
-                            {# Единый стиль: договоры столбиками-badges. Логины/IP не выводятся. #}
-                            {% for cn in onu_contracts[:3] %}
-                                <span class="badge bg-success">{{ cn[:12] }}{% if cn|length > 12 %}...{% endif %}</span>
-                            {% endfor %}
-                            {% if onu_contracts|length > 3 %}
-                                <span class="badge bg-primary" title="{{ onu_contracts[3:]|join(', ') }}">+{{ onu_contracts|length - 3 }}</span>
-                            {% endif %}
+                            {# Единый стиль: ВСЕ договоры бэджами столбиком. Логины/IP не выводятся. #}
+                            <div class="d-flex flex-column align-items-start gap-1">
+                                {% for cn in onu_contracts %}
+                                    <span class="badge bg-success">{{ cn }}</span>
+                                {% endfor %}
+                            </div>
                         {% else %}
                             <span class="badge bg-secondary">—</span>
                         {% endif %}

@@ -141,10 +141,10 @@
                 <div class="table-responsive">
                     <table class="table table-sm table-hover mb-0 table-stats">
                         <thead class="table-light"><tr>
-                            <th>Устройство</th><th>Интерфейс</th><th>MAC</th><th>Договор</th><th>Клиент (логин/IP)</th>
+                            <th>Устройство</th><th>Интерфейс</th><th>MAC</th><th>Договор</th>
                             <th>Описание</th><th>Был, дБм</th><th>Стал, дБм</th><th>Δ, дБ</th><th>Действия</th>
                         </tr></thead>
-                        <tbody id="degraded-tbody"><tr><td colspan="10" class="text-center text-muted py-3">Загрузка…</td></tr></tbody>
+                        <tbody id="degraded-tbody"><tr><td colspan="9" class="text-center text-muted py-3">Загрузка…</td></tr></tbody>
                     </table>
                 </div>
             </div>
@@ -169,9 +169,9 @@
             <div class="card-body p-0" style="max-height: 480px; overflow-y:auto;">
                 <table class="table table-sm table-hover mb-0 table-stats">
                     <thead class="table-light sticky-top"><tr>
-                        <th>Устройство / интерфейс</th><th>MAC</th><th>Договор</th><th>Клиент (логин/IP)</th><th>Сигнал</th><th>Действия</th>
+                        <th>Устройство / интерфейс</th><th>MAC</th><th>Договор</th><th>Сигнал</th><th>Действия</th>
                     </tr></thead>
-                    <tbody id="worst-tbody"><tr><td colspan="6" class="text-center text-muted py-3">Загрузка…</td></tr></tbody>
+                    <tbody id="worst-tbody"><tr><td colspan="5" class="text-center text-muted py-3">Загрузка…</td></tr></tbody>
                 </table>
             </div>
         </div>
@@ -214,13 +214,16 @@ if (typeof Chart === 'undefined') {
     }
 
     function contractCell(row) {
-        const cn = row.contract && row.contract !== 'N/A' ? row.contract : null;
-        const login = row.contract_login || '';
-        const ip = row.contract_ip || '';
-        let html = cn ? `<code class="font-monospace" title="${esc(cn)}">${esc(cn)}</code>` : '<span class="text-muted">—</span>';
-        const extra = [login, ip].filter(Boolean).join(' / ');
-        if (extra) html += `<div class="text-muted" style="font-size:10px;" title="${esc(extra)}">${esc(extra)}</div>`;
-        return html;
+        // Единый стиль с monitoring.js: ВСЕ договоры бэджами столбиком. Логины/IP не выводятся.
+        const list = (Array.isArray(row.all_contracts) && row.all_contracts.length)
+            ? row.all_contracts
+            : (row.contract && row.contract !== 'N/A'
+                ? String(row.contract).split(',').map(s => s.trim()).filter(Boolean)
+                : []);
+        if (!list.length) return '<span class="text-muted">\u2014</span>';
+        return '<div class="d-flex flex-column align-items-start gap-1">' +
+            list.map(cn => `<span class="badge bg-success">${esc(cn)}</span>`).join('') +
+            '</div>';
     }
 
     function onuActionsRow(deviceId, iface) {
@@ -408,7 +411,7 @@ if (typeof Chart === 'undefined') {
             const rows = data.onus || [];
             set('kpi-degraded', data.total_count);
             if (!rows.length) {
-                tbody.innerHTML = '<tr><td colspan="10" class="text-center text-success py-3">Значимых деградаций сигнала не обнаружено 🎉</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" class="text-center text-success py-3">Значимых деградаций сигнала не обнаружено 🎉</td></tr>';
                 return;
             }
             tbody.innerHTML = rows.map(r => `<tr class="table-warning">
@@ -416,7 +419,6 @@ if (typeof Chart === 'undefined') {
                 <td><code class="font-monospace">${esc(r.interface)}</code></td>
                 <td><code>${esc(r.mac) || '—'}</code></td>
                 <td>${contractCell(r)}</td>
-                <td class="text-truncate" style="max-width:220px;" title="${esc(r.contract_login || r.description || '')}">${esc(r.contract_login) || esc(r.description) || '—'}</td>
                 <td class="text-truncate" style="max-width:180px;" title="${esc(r.description || '')}">${esc(r.description) || '—'}</td>
                 <td>${r.first_power}</td>
                 <td class="fw-bold text-danger">${r.current_power}</td>
@@ -424,7 +426,7 @@ if (typeof Chart === 'undefined') {
                 <td>${onuActionsRow(r.device_id, r.interface)}</td>
             </tr>`).join('');
         } catch (e) {
-            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-danger py-3">Ошибка загрузки</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-danger py-3">Ошибка загрузки</td></tr>';
         }
     }
 
@@ -435,7 +437,7 @@ if (typeof Chart === 'undefined') {
             const data = await fetchJson('/api/stats/worst_onus');
             const rows = data.onus || [];
             if (!rows.length) {
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">Нет активных ONU с измеренным сигналом</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">Нет активных ONU с измеренным сигналом</td></tr>';
                 return;
             }
             tbody.innerHTML = rows.map(r => {
@@ -446,13 +448,12 @@ if (typeof Chart === 'undefined') {
                         <div>${esc(r.device)}</div><code class="font-monospace">${esc(r.interface)}</code></a></td>
                     <td><code>${esc(r.mac) || '—'}</code></td>
                     <td>${contractCell(r)}</td>
-                    <td class="text-truncate" style="max-width:180px;" title="${esc(r.description || '')}">${esc(r.description) || '—'}</td>
                     <td class="${cls}">${p != null ? p.toFixed(1) + ' дБм' : '—'}</td>
                     <td>${onuActionsRow(r.device_id, r.interface)}</td>
                 </tr>`;
             }).join('');
         } catch (e) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-3">Ошибка загрузки</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-3">Ошибка загрузки</td></tr>';
         }
     }
 
