@@ -1034,7 +1034,7 @@ def get_outage_events(session, days=7, limit=300):
             ONUHistory.device_id, ONUHistory.interface, ONUHistory.action,
             ONUHistory.details, ONUHistory.created_at,
         ).filter(ONUIHistory.created_at >= since).order_by(
-            ONUHistory.device_id, ONUHistory.interface, ONUHistory.created_at
+            ONUIHistory.device_id, ONUIHistory.interface, ONUIHistory.created_at
         ).limit(100000).all()
 
         last_action = {}
