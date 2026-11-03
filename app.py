@@ -1426,6 +1426,10 @@ def onu_detail(device_id, interface):
             onu = next((o for o in result.get('onus', []) if o['interface'] == interface), None)
             if not onu:
                 return render_template('error.html', message="ONU не найдена"), 404
+            # Единый стандарт списков ONU: дополняем строку всеми привязанными
+            # договорами (all_contracts), чтобы страница детали показывала их
+            # столбиком сразу, без нажатия кнопки «Показать все договоры».
+            enrich_rows_with_contract_details(session_db, [onu])
             return render_template(
                 'onu_detail.html',
                 device_id=normalized_id,
@@ -1437,6 +1441,10 @@ def onu_detail(device_id, interface):
         onu = next((o for o in data.get('onu_info', []) if o['interface'] == interface), None)
         if not onu:
             return render_template('error.html', message="ONU не найдена"), 404
+    # Единый стандарт списков ONU: live-данные могут содержать только основной
+    # договор в поле 'contract'; дополняем всеми привязками (all_contracts).
+    with get_db_session() as session_db:
+        enrich_rows_with_contract_details(session_db, [onu])
     return render_template(
         'onu_detail.html',
         device_id=normalized_id,
