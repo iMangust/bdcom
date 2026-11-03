@@ -2496,6 +2496,60 @@ def _standardized_onu_rows(session, onus):
     return rows
 
 
+def get_inactive_onus(session):
+    """Неактивные (offline) ONU в едином стандарте строк + тип привязки.
+
+    Заменяет «сырую» сборку словарей в /api/inactive_onus: договор и данные
+    клиента теперь доступны здесь так же, как в поиске и остальных списках.
+    """
+    try:
+        onus = session.query(ONU).filter(
+            ONU.optical_power.is_(None), ONU.is_active.is_(True)
+        ).order_by(ONU.device_name, ONU.interface).all()
+        results = _standardized_onu_rows(session, onus)
+        for r in results:
+            desc = (r.get('description') or '').lower()
+            r['bind_type'] = 'dynamic' if ('dynamic' in desc or 'динам' in desc) else 'static'
+        return {'inactive_onus': results, 'count': len(results)}
+    except Exception as e:
+        logger.error(f"Error getting inactive ONUs: {e}", exc_info=True)
+        return {'inactive_onus': [], 'count': 0, 'error': INTERNAL_ERROR_MSG}
+
+
+def get_onus_without_description(session):
+    """ONU без описания в едином стандарте строк (для панели поиска)."""
+    try:
+        onus = session.query(ONU).filter(
+            ((ONU.description == '') | (ONU.description.is_(None)) |
+             (ONU.description == 'N/A') | (ONU.description == ONU.interface)),
+            ONU.is_active.is_(True)
+        ).order_by(ONU.device_name, ONU.interface).all()
+        results = _standardized_onu_rows(session, onus)
+        return {'onus_without_description': results, 'total_count': len(results),
+                'message': f'Найдено {len(results)} ONU без описания'}
+    except Exception as e:
+        logger.error(f"Error getting ONUs without description: {e}", exc_info=True)
+        return {'onus_without_description': [], 'total_count': 0, 'error': INTERNAL_ERROR_MSG}
+
+
+def get_onus_without_contract(session):
+    """ONU без договора в едином стандарте строк (для страницы договоров)."""
+    try:
+        onus = session.query(ONU).filter(
+            ((ONU.contract == '') | (ONU.contract.is_(None))),
+            ONU.is_active.is_(True)
+        ).order_by(ONU.device_name, ONU.interface).all()
+        results = _standardized_onu_rows(session, onus)
+        # Договор мог быть только в справочнике привязок — считаем отсутствующим
+        # тот, где нет ни основного номера, ни привязок ONUContract.
+        results = [r for r in results if not r.get('contract')]
+        return {'onus_without_contract': results, 'total_count': len(results),
+                'message': f'Найдено {len(results)} ONU без договоров'}
+    except Exception as e:
+        logger.error(f"Error getting ONUs without contract: {e}", exc_info=True)
+        return {'onus_without_contract': [], 'total_count': 0, 'error': INTERNAL_ERROR_MSG}
+
+
 def get_onus_by_ids(session, ids):
     """Стандартизованные строки ONU по списку id (для групп дубликатов MAC)."""
     try:

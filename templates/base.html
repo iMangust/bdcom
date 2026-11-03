@@ -49,6 +49,7 @@
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item"><a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}" href="{{ url_for('index') }}"><i class="bi bi-house-door"></i> Главная</a></li>
                     <li class="nav-item"><a class="nav-link {% if request.endpoint == 'contracts_page' %}active{% endif %}" href="{{ url_for('contracts_page') }}"><i class="bi bi-file-earmark-text"></i> Договоры</a></li>
+                    <li class="nav-item"><a class="nav-link {% if request.endpoint in ('statistics', 'api_stats_overview', 'api_stats_signal_trends', 'api_stats_daily_availability', 'api_stats_outages', 'api_stats_degraded', 'api_stats_worst_onus', 'api_stats_onu_history') %}active{% endif %}" href="{{ url_for('statistics') }}"><i class="bi bi-graph-up-arrow"></i> Статистика</a></li>
                     {% if session.get('role') == 'admin' %}
                     <li class="nav-item"><a class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}" href="{{ url_for('settings') }}"><i class="bi bi-gear"></i> Настройки</a></li>
                     <li class="nav-item"><a class="nav-link {% if request.endpoint == 'telegram_settings' %}active{% endif %}" href="{{ url_for('telegram_settings') }}"><i class="bi bi-telegram"></i> Telegram</a></li>

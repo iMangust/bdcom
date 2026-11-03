@@ -1,0 +1,483 @@
+{% extends "base.html" %}
+{% block title %}Статистика и прогнозирование{% endblock %}
+{% block extra_css %}
+<style>
+    .stat-card { border-left: 4px solid var(--bs-primary); }
+    .stat-value { font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
+    .chart-box { position: relative; height: 320px; }
+    .chart-box-sm { position: relative; height: 260px; }
+    .table-stats td, .table-stats th { font-size: 12px; vertical-align: middle; }
+    #statistics .nav-pills .nav-link { font-size: 13px; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h4 class="mb-0"><i class="bi bi-graph-up-arrow"></i> Статистика и прогнозирование деградаций</h4>
+    <div class="d-flex gap-2 align-items-center">
+        <label class="small text-muted mb-0" for="stats-days">Период:</label>
+        <select id="stats-days" class="form-select form-select-sm w-auto">
+            <option value="7" {% if days == 7 %}selected{% endif %}>7 дней</option>
+            <option value="14" {% if days == 14 %}selected{% endif %}>14 дней</option>
+            <option value="30" {% if days == 30 %}selected{% endif %}>30 дней</option>
+            <option value="90" {% if days == 90 %}selected{% endif %}>90 дней</option>
+        </select>
+        <button id="btn-reload" class="btn btn-outline-primary btn-sm"><i class="bi bi-arrow-repeat"></i> Обновить</button>
+    </div>
+</div>
+
+<div class="alert alert-info small py-2">
+    <i class="bi bi-info-circle"></i> Данные строятся по снимкам состояния ONU (<code>onu_state</code>) и журналу изменений (<code>onu_history</code>).
+    История накапливается после каждого цикла опроса OLT; чем дольше работает мониторинг — тем ценнее тренды.
+</div>
+
+<!-- KPI -->
+<div class="row g-2 mb-3" id="stats-kpi">
+    <div class="col-6 col-md-3 col-lg-2">
+        <div class="card stat-card h-100"><div class="card-body py-2">
+            <div class="stat-value text-success" id="kpi-active">—</div>
+            <div class="small text-muted">Активные ONU</div>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <div class="card stat-card h-100" style="border-color: var(--bs-danger)"><div class="card-body py-2">
+            <div class="stat-value text-danger" id="kpi-inactive">—</div>
+            <div class="small text-muted">Offline ONU</div>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <div class="card stat-card h-100" style="border-color: var(--bs-warning)"><div class="card-body py-2">
+            <div class="stat-value text-warning" id="kpi-degraded">—</div>
+            <div class="small text-muted">Деградируют (за период)</div>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <div class="card stat-card h-100" style="border-color: var(--bs-info)"><div class="card-body py-2">
+            <div class="stat-value text-info" id="kpi-uptime">—</div>
+            <div class="small text-muted">Аптайм сети</div>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <div class="card stat-card h-100" style="border-color: var(--bs-secondary)"><div class="card-body py-2">
+            <div class="stat-value text-secondary" id="kpi-outages-open">—</div>
+            <div class="small text-muted">Открытые обрывы</div>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <div class="card stat-card h-100" style="border-color: var(--bs-primary)"><div class="card-body py-2">
+            <div class="stat-value text-primary" id="kpi-contracts">—</div>
+            <div class="small text-muted">ONU с договором</div>
+        </div></div>
+    </div>
+</div>
+
+<!-- Графики -->
+<ul class="nav nav-pills mb-2" id="statsTabs" role="tablist">
+    <li class="nav-item" role="presentation"><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab-trends" type="button"><i class="bi bi-graph-up"></i> Тренды сигнала</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-availability" type="button"><i class="bi bi-activity"></i> Доступность</button></li>
+    <li class="nav-item" role="presentation"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-histogram" type="button"><i class="bi bi-bar-chart"></i> Распределение сигналов</button></li>
+</ul>
+<div class="tab-content mb-4">
+    <div class="tab-pane fade show active" id="tab-trends" role="tabpanel">
+        <div class="card mb-2">
+            <div class="card-header bg-white py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <span class="small fw-bold"><i class="bi bi-graph-up"></i> Средний уровень сигнала по OLT (по часам)</span>
+                <select id="trend-device" class="form-select form-select-sm w-auto">
+                    <option value="">Все устройства</option>
+                    {% for did, cfg in DEVICES.items() %}
+                    <option value="{{ did }}">{{ cfg.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="card-body"><div class="chart-box"><canvas id="chart-trends"></canvas></div>
+                <div id="trends-empty" class="text-center text-muted small py-4" style="display:none;">
+                    Нет данных временного ряда за выбранный период.<br>
+                    Снимки начинают накапливаться после первого успешного цикла опроса устройств.
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="tab-pane fade" id="tab-availability" role="tabpanel">
+        <div class="card mb-2">
+            <div class="card-header bg-white py-2"><span class="small fw-bold"><i class="bi bi-activity"></i> Ежедневный аптайм сети (%) и число онлайн-ONU</span></div>
+            <div class="card-body"><div class="chart-box"><canvas id="chart-availability"></canvas></div>
+                <div id="availability-empty" class="text-center text-muted small py-4" style="display:none;">Нет данных доступности за выбранный период.</div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header bg-white py-2"><span class="small fw-bold">Аптайм по устройствам</span></div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0 table-stats">
+                        <thead class="table-light"><tr><th>Устройство</th><th>Снимков</th><th>Онлайн</th><th>Аптайм, %</th></tr></thead>
+                        <tbody id="uptime-tbody"><tr><td colspan="4" class="text-center text-muted py-3">Загрузка…</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="tab-pane fade" id="tab-histogram" role="tabpanel">
+        <div class="card mb-2">
+            <div class="card-header bg-white py-2"><span class="small fw-bold"><i class="bi bi-bar-chart"></i> Распределение активных ONU по уровню сигнала</span></div>
+            <div class="card-body"><div class="chart-box-sm"><canvas id="chart-histogram"></canvas></div></div>
+        </div>
+        <div class="card">
+            <div class="card-header bg-white py-2"><span class="small fw-bold"><i class="bi bi-list-ul"></i> События журнала изменений ONU за период</span></div>
+            <div class="card-body"><div class="chart-box-sm"><canvas id="chart-actions"></canvas></div></div>
+        </div>
+    </div>
+</div>
+
+<!-- Таблицы -->
+<div class="row g-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-warning text-dark py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <span class="fw-bold"><i class="bi bi-exclamation-triangle"></i> Деградирующие ONU (кандидаты на профилактику)</span>
+                <span class="small">Порог падения:
+                    <input id="degraded-threshold" type="number" value="3" min="0.5" max="20" step="0.5" class="form-control form-control-sm d-inline-block" style="width:80px;"> дБ
+                </span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0 table-stats">
+                        <thead class="table-light"><tr>
+                            <th>Устройство</th><th>Интерфейс</th><th>MAC</th><th>Договор</th><th>Клиент (логин/IP)</th>
+                            <th>Описание</th><th>Был, дБм</th><th>Стал, дБм</th><th>Δ, дБ</th><th>Действия</th>
+                        </tr></thead>
+                        <tbody id="degraded-tbody"><tr><td colspan="10" class="text-center text-muted py-3">Загрузка…</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-xl-6">
+        <div class="card h-100">
+            <div class="card-header bg-danger text-white py-2"><span class="fw-bold"><i class="bi bi-x-octagon"></i> Обрывы и восстановления за период</span></div>
+            <div class="card-body p-0" style="max-height: 480px; overflow-y:auto;">
+                <table class="table table-sm table-hover mb-0 table-stats">
+                    <thead class="table-light sticky-top"><tr>
+                        <th>Устройство / интерфейс</th><th>Начало</th><th>Длит.</th><th>Состояние</th><th>Действия</th>
+                    </tr></thead>
+                    <tbody id="outage-tbody"><tr><td colspan="5" class="text-center text-muted py-3">Загрузка…</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-xl-6">
+        <div class="card h-100">
+            <div class="card-header bg-info text-white py-2"><span class="fw-bold"><i class="bi bi-brightness-high"></i> Худшие по сигналу активные ONU</span></div>
+            <div class="card-body p-0" style="max-height: 480px; overflow-y:auto;">
+                <table class="table table-sm table-hover mb-0 table-stats">
+                    <thead class="table-light sticky-top"><tr>
+                        <th>Устройство / интерфейс</th><th>MAC</th><th>Договор</th><th>Клиент (логин/IP)</th><th>Сигнал</th><th>Действия</th>
+                    </tr></thead>
+                    <tbody id="worst-tbody"><tr><td colspan="6" class="text-center text-muted py-3">Загрузка…</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+    'use strict';
+    const esc = window.escapeHtml;
+    const state = { days: {{ days | tojson }}, charts: {} };
+
+    function apiUrl(path, params) {
+        const q = new URLSearchParams(params || {});
+        q.set('days', state.days);
+        return path + '?' + q.toString();
+    }
+
+    async function fetchJson(url) {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+    }
+
+    function makeChart(id, config) {
+        const canvas = document.getElementById(id);
+        if (!canvas || typeof Chart === 'undefined') return null;
+        if (state.charts[id]) state.charts[id].destroy();
+        state.charts[id] = new Chart(canvas, config);
+        return state.charts[id];
+    }
+
+    function contractCell(row) {
+        const cn = row.contract && row.contract !== 'N/A' ? row.contract : null;
+        const login = row.contract_login || '';
+        const ip = row.contract_ip || '';
+        let html = cn ? `<code class="font-monospace" title="${esc(cn)}">${esc(cn)}</code>` : '<span class="text-muted">—</span>';
+        const extra = [login, ip].filter(Boolean).join(' / ');
+        if (extra) html += `<div class="text-muted" style="font-size:10px;" title="${esc(extra)}">${esc(extra)}</div>`;
+        return html;
+    }
+
+    function onuActionsRow(deviceId, iface) {
+        return `<div class="d-flex gap-1">
+            <a href="/onu/${encodeURIComponent(deviceId)}/${encodeURIComponent(iface)}" class="btn btn-outline-primary btn-xs py-0 px-1" title="Детали ONU (история сигнала)"><i class="bi bi-eye"></i></a>
+            <a href="/device/${encodeURIComponent(deviceId)}" class="btn btn-outline-secondary btn-xs py-0 px-1" title="Детали узла"><i class="bi bi-cpu"></i></a>
+        </div>`;
+    }
+
+    // ---------- KPI + сводка ----------
+    async function loadOverview() {
+        try {
+            const data = await fetchJson(apiUrl('/api/stats/overview'));
+            const g = data.global || {};
+            set('kpi-active', g.active_onus);
+            set('kpi-inactive', g.inactive_onus);
+            set('kpi-contracts', `${g.onus_with_contract ?? '—'} / ${g.onus_total ?? '—'}`, true);
+            const av = data.availability || {};
+            set('kpi-uptime', av.overall_uptime_pct != null ? av.overall_uptime_pct.toFixed(2) + '%' : '—');
+
+            renderUptimeTable(av.devices || []);
+            renderHistogram(data.histogram || {});
+            renderActions(data.history_actions || {});
+        } catch (e) {
+            console.error('overview', e);
+        }
+    }
+    function set(id, val, small) {
+        const el = document.getElementById(id);
+        if (el) { el.textContent = (val === undefined || val === null) ? '—' : String(val); if (small) el.style.fontSize = '1.1rem'; }
+    }
+
+    function renderUptimeTable(devices) {
+        const tbody = document.getElementById('uptime-tbody');
+        if (!devices.length) { tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-3">Нет данных снимков за период</td></tr>'; return; }
+        tbody.innerHTML = devices.map(d => {
+            const up = d.uptime_pct;
+            const cls = up == null ? 'text-muted' : (up >= 99 ? 'text-success fw-bold' : up >= 95 ? 'text-warning fw-bold' : 'text-danger fw-bold');
+            return `<tr>
+                <td><a href="/device/${encodeURIComponent(d.device_id)}" class="text-decoration-none">${esc(d.device)}</a></td>
+                <td>${d.samples}</td><td>${d.online_samples}</td>
+                <td class="${cls}">${up == null ? '—' : up.toFixed(2) + '%'}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    function renderHistogram(h) {
+        makeChart('chart-histogram', {
+            type: 'doughnut',
+            data: {
+                labels: ['Хороший (> -25 дБм)', 'Предупреждение (-25…-27)', 'Плохой (< -27)', 'Без сигнала'],
+                datasets: [{ data: [h.good || 0, h.warning || 0, h.bad || 0, h.offline || 0],
+                             backgroundColor: ['#198754', '#ffc107', '#dc3545', '#6c757d'] }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+        });
+    }
+
+    const ACTION_LABELS = {
+        down: 'Обрыв (down)', up: 'Восстановление (up)', created: 'Создание', unconfigured: 'Не прописана',
+        marked_moved: 'Переезд (отметка)', moved_to: 'Переезд (новая)', moved_from: 'Переезд (старая)',
+        restored: 'Восстановлена', deleted: 'Удаление', description_updated: 'Описание', contract_updated: 'Договор'
+    };
+    function renderActions(a) {
+        const items = (a.actions || []).slice().sort((x, y) => y.count - x.count);
+        makeChart('chart-actions', {
+            type: 'bar',
+            data: {
+                labels: items.map(i => ACTION_LABELS[i.action] || i.action),
+                datasets: [{ label: 'Событий', data: items.map(i => i.count), backgroundColor: '#0d6efd' }]
+            },
+            options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+                       plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true } } }
+        });
+    }
+
+    // ---------- Тренды сигнала ----------
+    async function loadTrends() {
+        const params = {};
+        const dev = document.getElementById('trend-device').value;
+        if (dev) params.device = dev;
+        try {
+            const data = await fetchJson(apiUrl('/api/stats/signal_trends', params));
+            const series = data.series || [];
+            const emptyEl = document.getElementById('trends-empty');
+            const colors = ['#0d6efd', '#198754', '#dc3545', '#fd7e14', '#6f42c1', '#20c997', '#d63384', '#6c757d'];
+            if (!series.length) {
+                emptyEl.style.display = 'block';
+                if (state.charts['chart-trends']) { state.charts['chart-trends'].destroy(); delete state.charts['chart-trends']; }
+                return;
+            }
+            emptyEl.style.display = 'none';
+            makeChart('chart-trends', {
+                type: 'line',
+                data: { datasets: series.map((s, i) => ({
+                    label: s.name,
+                    data: s.points.map(p => ({ x: p[0], y: p[1] })),
+                    borderColor: colors[i % colors.length],
+                    backgroundColor: colors[i % colors.length] + '33',
+                    borderWidth: s.name.includes('Худший') ? 1.5 : 2,
+                    borderDash: s.name.includes('Худший') ? [6, 4] : [],
+                    pointRadius: 0, tension: 0.25, fill: false
+                })) },
+                options: {
+                    responsive: true, maintainAspectRatio: false, interaction: { mode: 'nearest', axis: 'x', intersect: false },
+                    scales: {
+                        x: { type: 'category', ticks: { maxTicksLimit: 14, font: { size: 10 } } },
+                        y: { title: { display: true, text: 'дБм' }, ticks: { font: { size: 10 } } }
+                    },
+                    plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } },
+                               tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y} дБм` } } }
+                }
+            });
+        } catch (e) { console.error('trends', e); }
+    }
+
+    // ---------- Ежедневный аптайм ----------
+    async function loadDailyAvailability() {
+        try {
+            const data = await fetchJson(apiUrl('/api/stats/daily_availability'));
+            const labels = data.labels || [];
+            const emptyEl = document.getElementById('availability-empty');
+            if (!labels.length) {
+                emptyEl.style.display = 'block';
+                if (state.charts['chart-availability']) { state.charts['chart-availability'].destroy(); delete state.charts['chart-availability']; }
+                return;
+            }
+            emptyEl.style.display = 'none';
+            makeChart('chart-availability', {
+                data: {
+                    labels,
+                    datasets: [
+                        { type: 'line', label: 'Аптайм, %', data: data.uptime, yAxisID: 'y',
+                          borderColor: '#198754', backgroundColor: '#19875433', tension: 0.2, pointRadius: 2 },
+                        { type: 'bar', label: 'Онлайн ONU', data: data.online, yAxisID: 'y1',
+                          backgroundColor: '#0d6efd33', borderColor: '#0d6efd', borderWidth: 1 }
+                    ]
+                },
+                options: { responsive: true, maintainAspectRatio: false,
+                    scales: {
+                        y: { position: 'left', min: 0, max: 100, title: { display: true, text: '%' }, ticks: { font: { size: 10 } } },
+                        y1: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: 'ONU' }, ticks: { font: { size: 10 } } },
+                        x: { ticks: { maxTicksLimit: 14, font: { size: 10 } } }
+                    },
+                    plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } } }
+            });
+        } catch (e) { console.error('daily availability', e); }
+    }
+
+    // ---------- Обрывы ----------
+    async function loadOutages() {
+        const tbody = document.getElementById('outage-tbody');
+        try {
+            const data = await fetchJson(apiUrl('/api/stats/outages'));
+            const events = data.events || [];
+            set('kpi-outages-open', data.open_count);
+            if (!events.length) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">Обрывов за период не зафиксировано</td></tr>';
+                return;
+            }
+            tbody.innerHTML = events.map(ev => {
+                const isOpen = ev.state === 'open';
+                const dur = ev.duration_min == null ? '—'
+                    : ev.duration_min < 60 ? `${ev.duration_min} мин` : `${Math.floor(ev.duration_min / 60)} ч ${ev.duration_min % 60} м`;
+                return `<tr class="${isOpen ? 'table-danger' : ''}">
+                    <td><a href="/onu/${encodeURIComponent(ev.device_id)}/${encodeURIComponent(ev.interface)}" class="text-decoration-none">
+                        <div>${esc(ev.device)}</div><code class="font-monospace">${esc(ev.interface)}</code></a></td>
+                    <td class="text-nowrap">${esc(ev.started_at) || '—'}</td>
+                    <td>${dur}</td>
+                    <td>${isOpen ? '<span class="badge bg-danger">Активен</span>' : '<span class="badge bg-success">Восстановлен</span>'}</td>
+                    <td>${onuActionsRow(ev.device_id, ev.interface)}</td>
+                </tr>`;
+            }).join('');
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-3">Ошибка загрузки</td></tr>';
+        }
+    }
+
+    // ---------- Деградации ----------
+    async function loadDegraded() {
+        const tbody = document.getElementById('degraded-tbody');
+        try {
+            const threshold = document.getElementById('degraded-threshold').value || 3;
+            const data = await fetchJson(apiUrl('/api/stats/degraded', { threshold }));
+            const rows = data.onus || [];
+            set('kpi-degraded', data.total_count);
+            if (!rows.length) {
+                tbody.innerHTML = '<tr><td colspan="10" class="text-center text-success py-3">Значимых деградаций сигнала не обнаружено 🎉</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(r => `<tr class="table-warning">
+                <td><a href="/device/${encodeURIComponent(r.device_id)}" class="text-decoration-none">${esc(r.device)}</a></td>
+                <td><code class="font-monospace">${esc(r.interface)}</code></td>
+                <td><code>${esc(r.mac) || '—'}</code></td>
+                <td>${contractCell(r)}</td>
+                <td>${esc(r.description) || '—'}</td>
+                <td class="text-truncate" style="max-width:180px;" title="${esc(r.description || '')}">${esc(r.description) || '—'}</td>
+                <td>${r.first_power}</td>
+                <td class="fw-bold text-danger">${r.current_power}</td>
+                <td class="fw-bold">−${r.delta_db}</td>
+                <td>${onuActionsRow(r.device_id, r.interface)}</td>
+            </tr>`).join('');
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-danger py-3">Ошибка загрузки</td></tr>';
+        }
+    }
+
+    // ---------- Худшие ONU ----------
+    async function loadWorst() {
+        const tbody = document.getElementById('worst-tbody');
+        try {
+            const data = await fetchJson('/api/stats/worst_onus');
+            const rows = data.onus || [];
+            if (!rows.length) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">Нет активных ONU с измеренным сигналом</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(r => {
+                const p = r.optical_power;
+                const cls = p <= -27 ? 'text-danger fw-bold' : p <= -25 ? 'text-warning fw-bold' : 'text-success';
+                return `<tr>
+                    <td><a href="/onu/${encodeURIComponent(r.device_id)}/${encodeURIComponent(r.interface)}" class="text-decoration-none">
+                        <div>${esc(r.device)}</div><code class="font-monospace">${esc(r.interface)}</code></a></td>
+                    <td><code>${esc(r.mac) || '—'}</code></td>
+                    <td>${contractCell(r)}</td>
+                    <td class="text-truncate" style="max-width:180px;" title="${esc(r.description || '')}">${esc(r.description) || '—'}</td>
+                    <td class="${cls}">${p != null ? p.toFixed(1) + ' дБм' : '—'}</td>
+                    <td>${onuActionsRow(r.device_id, r.interface)}</td>
+                </tr>`;
+            }).join('');
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-3">Ошибка загрузки</td></tr>';
+        }
+    }
+
+    function loadAll() {
+        loadOverview();
+        loadTrends();
+        loadDailyAvailability();
+        loadOutages();
+        loadDegraded();
+        loadWorst();
+    }
+
+    document.getElementById('stats-days').addEventListener('change', (e) => {
+        state.days = parseInt(e.target.value, 10) || 7;
+        loadAll();
+    });
+    document.getElementById('btn-reload').addEventListener('click', loadAll);
+    document.getElementById('trend-device').addEventListener('change', loadTrends);
+    let thrTimer = null;
+    document.getElementById('degraded-threshold').addEventListener('input', () => {
+        clearTimeout(thrTimer);
+        thrTimer = setTimeout(loadDegraded, 500);
+    });
+
+    if (typeof Chart === 'undefined') {
+        document.querySelectorAll('.chart-box, .chart-box-sm').forEach(el => {
+            el.insertAdjacentHTML('beforeend', '<div class="text-center text-muted small py-4">Библиотека графиков (Chart.js) недоступна — проверьте подключение к CDN или установите её локально.</div>');
+        });
+    } else {
+        loadAll();
+    }
+})();
+</script>
+{% endblock %}

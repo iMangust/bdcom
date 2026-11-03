@@ -43,7 +43,12 @@ bind_contracts_to_onu, search_contracts, get_contract_stats, ONUContract,
 set_onu_contract, find_duplicate_onus, get_onu_contracts as db_get_onu_contracts,
 cleanup_moved_onus, get_moved_onus, is_mcd, get_mcd_onus,
 get_onu_list_by_filter, delete_onu_safely, delete_device_completely,
-refresh_db_device_names, get_contracts_map_for_onus
+refresh_db_device_names, get_contracts_map_for_onus,
+get_signal_trend_series, get_availability_stats, get_daily_availability,
+get_outage_events, get_degraded_onus, get_signal_histogram,
+get_onu_state_history, get_top_worst_onus, get_history_actions_summary,
+get_inactive_onus, get_onus_without_description, get_onus_without_contract,
+ONUState
 )
 from telegram_bot import (
 telegram_bot, initialize_telegram_bot, start_telegram_monitoring,
@@ -2051,13 +2056,9 @@ reason=f"Удалена администратором {session.get('username', 
 @app.route('/api/inactive_onus')
 @login_required
 def api_inactive_onus():
+    # Единый стандарт строк ONU (договор, данные клиента, флаги) — см. database.get_inactive_onus
     with get_db_session() as session_db:
-        inactive_onus = session_db.query(ONU).filter(ONU.optical_power.is_(None), ONU.is_active.is_(True)).all()
-        results = []
-        for onu in inactive_onus:
-            bind_type = 'dynamic' if onu.description and ('dynamic' in onu.description.lower() or 'динам' in onu.description.lower()) else 'static'
-            results.append({'device_id': onu.device_id, 'device': onu.device_name, 'interface': safe_interface(onu.interface), 'mac': onu.mac, 'description': onu.description or '', 'contract': onu.contract or '', 'status': onu.status or 'off-line', 'dereg_reason': onu.dereg_reason or '', 'vendor': onu.vendor or '', 'model': onu.model or '', 'optical_power': None, 'optical_status': 'unknown', 'bind_type': bind_type, 'client_macs_count': 0, 'timestamp': onu.last_seen.isoformat() if hasattr(onu, 'last_seen') and onu.last_seen else '', 'is_mcd': is_mcd(onu.description)})
-    return jsonify({'inactive_onus': results, 'count': len(results)})
+        return jsonify(get_inactive_onus(session_db))
 
 @app.route('/api/update_status/<device_id>')
 @login_required
@@ -2104,11 +2105,8 @@ def api_duplicate_macs():
 def api_onu_without_description():
     with get_db_session() as session_db:
         try:
-            onus_without_desc = session_db.query(ONU).filter(((ONU.description == '') | (ONU.description.is_(None)) | (ONU.description == 'N/A') | (ONU.description == ONU.interface)), ONU.is_active.is_(True)).all()
-            cmap = get_contracts_map_for_onus(session_db, [(o.device_id, o.interface) for o in onus_without_desc])
-            results = [{'device_id': onu.device_id, 'device': onu.device_name, 'interface': safe_interface(onu.interface), 'mac': onu.mac, 'vendor': onu.vendor, 'model': onu.model, 'status': onu.status, 'optical_power': onu.optical_power, 'contract': cmap.get((onu.device_id, onu.interface)) or (onu.contract if onu.contract and onu.contract != 'N/A' else None), 'timestamp': onu.updated_at.strftime('%Y-%m-%d %H:%M:%S') if onu.updated_at else 'N/A'} for onu in onus_without_desc]
-            results.sort(key=lambda x: (x['device'], x['interface']))
-            return jsonify({'onus_without_description': results, 'total_count': len(results), 'message': f'Найдено {len(results)} ONU без описания'})
+            # Единый стандарт строк ONU (договор из справочника, как в поиске)
+            return jsonify(get_onus_without_description(session_db))
         except Exception:
             logger.error("api_onu_without_description failed", exc_info=True)
             return jsonify({'onus_without_description': [], 'total_count': 0, 'error': _INTERNAL_ERROR_MSG})
@@ -2130,10 +2128,8 @@ def api_mcd_onus():
 def api_onus_without_contract():
     with get_db_session() as session_db:
         try:
-            onus_without_contract = session_db.query(ONU).filter(((ONU.contract == '') | (ONU.contract.is_(None))), ONU.is_active.is_(True)).all()
-            results = [{'device_id': onu.device_id, 'device': onu.device_name, 'interface': safe_interface(onu.interface), 'description': onu.description, 'status': onu.status, 'optical_power': onu.optical_power, 'vendor': onu.vendor, 'model': onu.model, 'timestamp': onu.updated_at.strftime('%Y-%m-%d %H:%M:%S') if onu.updated_at else 'N/A', 'is_mcd': is_mcd(onu.description)} for onu in onus_without_contract]
-            results.sort(key=lambda x: (x['device'], x['interface']))
-            return jsonify({'onus_without_contract': results, 'total_count': len(results), 'message': f'Найдено {len(results)} ONU без договора'})
+            # Единый стандарт строк ONU; учитывает привязки из справочника
+            return jsonify(get_onus_without_contract(session_db))
         except Exception:
             logger.error("api_onus_without_contract failed", exc_info=True)
             return jsonify({'onus_without_contract': [], 'total_count': 0, 'error': _INTERNAL_ERROR_MSG})
@@ -2162,6 +2158,117 @@ def settings():
         flash('Недостаточно прав для доступа к настройкам', 'danger')
         return redirect(url_for('index'))
     return render_template('settings.html', UPDATE_CONFIG=UPDATE_CONFIG, BACKUP_CONFIG=BACKUP_CONFIG, TELEGRAM_CONFIG=TELEGRAM_CONFIG, DEVICES=DEVICES, username=session.get('username'), role=session.get('role'))
+
+
+# ============================ СТАТИСТИКА / ВРЕМЕННЫЕ РЯДЫ ============================
+# Страница «Статистика»: превращает монитор текущего состояния в систему
+# прогнозирования деградаций — тренды сигнала, аптайм, обрывы, деградирующие ONU.
+
+_STAT_DAYS_ALLOWED = (7, 14, 30, 90)
+
+
+def _stat_days(default=7):
+    """Безопасный разбор параметра ?days= из query-строки."""
+    try:
+        d = int(request.args.get('days', default))
+    except (TypeError, ValueError):
+        return default
+    return d if d in _STAT_DAYS_ALLOWED else default
+
+
+@app.route('/statistics')
+@login_required
+def statistics():
+    """Страница статистики: все временные ряды и отчёты, которые доступны по данным."""
+    return render_template(
+        'statistics.html',
+        DEVICES=DEVICES,
+        days=_stat_days(7),
+        username=session.get('username'), role=session.get('role'),
+    )
+
+
+@app.route('/api/stats/overview')
+@login_required
+def api_stats_overview():
+    """Сводка для страницы статистики: KPI + распределение сигналов за период."""
+    days = _stat_days()
+    with get_db_session() as session_db:
+        result = {
+            'days': days,
+            'global': get_global_stats(session_db),
+            'histogram': get_signal_histogram(session_db),
+            'availability': get_availability_stats(session_db, days=days),
+            'history_actions': get_history_actions_summary(session_db, days=days),
+            'devices': [{'id': did, 'name': cfg.get('name', did)} for did, cfg in sorted(DEVICES.items())],
+        }
+    return jsonify(result)
+
+
+@app.route('/api/stats/signal_trends')
+@login_required
+def api_stats_signal_trends():
+    """Временной ряд среднего/худшего уровня сигнала по устройствам."""
+    days = _stat_days()
+    device_id = request.args.get('device')
+    normalized_id = normalize_device_id(device_id) if device_id else None
+    with get_db_session() as session_db:
+        return jsonify(get_signal_trend_series(session_db, device_id=normalized_id, days=days))
+
+
+@app.route('/api/stats/daily_availability')
+@login_required
+def api_stats_daily_availability():
+    """Ежедневный аптайм сети (%) и число онлайн-ONU по дням."""
+    days = _stat_days(14)
+    with get_db_session() as session_db:
+        return jsonify(get_daily_availability(session_db, days=days))
+
+
+@app.route('/api/stats/outages')
+@login_required
+def api_stats_outages():
+    """Открытые и закрытые события обрывов ONU за период."""
+    days = _stat_days()
+    with get_db_session() as session_db:
+        return jsonify(get_outage_events(session_db, days=days))
+
+
+@app.route('/api/stats/degraded')
+@login_required
+def api_stats_degraded():
+    """ONU с признаками деградации сигнала (упал > порога дБ за период)."""
+    days = _stat_days()
+    try:
+        threshold = float(request.args.get('threshold', 3.0))
+    except (TypeError, ValueError):
+        threshold = 3.0
+    threshold = min(max(threshold, 0.5), 20.0)
+    with get_db_session() as session_db:
+        return jsonify(get_degraded_onus(session_db, delta_threshold=threshold, days=days))
+
+
+@app.route('/api/stats/worst_onus')
+@login_required
+def api_stats_worst_onus():
+    """Худшие по уровню сигнала активные ONU (единый стандарт строк + договор)."""
+    with get_db_session() as session_db:
+        return jsonify(get_top_worst_onus(session_db, limit=25))
+
+
+@app.route('/api/stats/onu_history/<device_id>')
+@login_required
+def api_stats_onu_history(device_id):
+    """История уровня сигнала одной ONU (для графика на странице детали ONU)."""
+    normalized_id = normalize_device_id(device_id)
+    if not normalized_id:
+        return jsonify({'points': [], 'error': 'Устройство не найдено'}), 404
+    interface = sanitize_string(request.args.get('interface', ''), max_length=64)
+    if not interface:
+        return jsonify({'points': [], 'error': 'Не указан интерфейс'}), 400
+    days = _stat_days(30)
+    with get_db_session() as session_db:
+        return jsonify(get_onu_state_history(session_db, normalized_id, interface, days=days))
 
 
 @app.route('/api/devices/list')
