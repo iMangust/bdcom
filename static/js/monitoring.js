@@ -153,7 +153,9 @@ const monitoring = {
                 ? String(item.contract).split(',').map(s => s.trim()).filter(Boolean)
                 : []);
         if (!list.length) return '<span class="text-muted">\u2014</span>';
-        return '<div class="d-flex flex-column align-items-start gap-1">' +
+        // title = полный список договоров (если их много — видно все при наведении)
+        const fullTitle = 'Договоры: ' + list.join(', ');
+        return `<div class="d-flex flex-column align-items-start gap-1" title="${escapeHtml(fullTitle)}">` +
             list.map(cn => `<span class="badge bg-success">${escapeHtml(cn)}</span>`).join('') +
             '</div>';
     },
@@ -247,7 +249,7 @@ const monitoring = {
                 <td><code class="font-monospace">${escapeHtml(r.interface)}</code></td>
                 <td><code>${escapeHtml(r.mac)}</code></td>
                 <td class="text-truncate" style="max-width: 200px;" title="${escapeHtml(r.description || '')}">${escapeHtml(r.description) || '—'}</td>
-                <td class="text-truncate" style="max-width: 140px;">${this._contractCell(r)}</td>
+                <td>${this._contractCell(r)}</td>
                 <td>${statusBadge}</td>
                 <td>${signalBadge}</td>
                 <td>
@@ -334,7 +336,7 @@ const monitoring = {
                     <td><code class="font-monospace">${escapeHtml(occ.interface)}</code></td>
                     <td><code class="text-primary"><strong>${escapeHtml(occ.mac)}</strong></code></td>
                     <td class="text-truncate" style="max-width: 200px;" title="${escapeHtml(occ.description || '')}">${escapeHtml(occ.description) || '—'}</td>
-                    <td class="text-truncate" style="max-width: 140px;">${this._contractCell(occ)}</td>
+                    <td>${this._contractCell(occ)}</td>
                     <td>${statusBadge}</td>
                     <td>${signalBadge}</td>
                     <td><small class="text-muted">${escapeHtml(occ.last_seen) || '—'}</small></td>
@@ -393,7 +395,7 @@ const monitoring = {
                     <td><code>${escapeHtml(onu.mac)}</code></td>
                     <td>${escapeHtml(onu.vendor) || '—'}</td>
                     <td>${escapeHtml(onu.model) || '—'}</td>
-                    <td class="text-truncate" style="max-width: 140px;">${this._contractCell(onu)}</td>
+                    <td>${this._contractCell(onu)}</td>
                     <td>${statusBadge}</td>
                     <td>${signalBadge}</td>
                     <td>

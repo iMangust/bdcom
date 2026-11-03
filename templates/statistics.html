@@ -221,7 +221,9 @@ if (typeof Chart === 'undefined') {
                 ? String(row.contract).split(',').map(s => s.trim()).filter(Boolean)
                 : []);
         if (!list.length) return '<span class="text-muted">\u2014</span>';
-        return '<div class="d-flex flex-column align-items-start gap-1">' +
+        // title = полный список договоров (если их много — видно все при наведении)
+        const fullTitle = 'Договоры: ' + list.join(', ');
+        return `<div class="d-flex flex-column align-items-start gap-1" title="${esc(fullTitle)}">` +
             list.map(cn => `<span class="badge bg-success">${esc(cn)}</span>`).join('') +
             '</div>';
     }

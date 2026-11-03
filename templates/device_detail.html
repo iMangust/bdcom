@@ -402,8 +402,8 @@
                     <td>
                         {% set onu_contracts = onu.all_contracts or ([onu.contract] if onu.contract else []) %}
                         {% if onu_contracts %}
-                            {# Единый стиль: ВСЕ договоры бэджами столбиком. Логины/IP не выводятся. #}
-                            <div class="d-flex flex-column align-items-start gap-1">
+                            {# Единый стиль: ВСЕ договоры бэджами столбиком (без ограничений). Логины/IP не выводятся. #}
+                            <div class="d-flex flex-column align-items-start gap-1" title="Договоры: {{ onu_contracts|join(', ') }}">
                                 {% for cn in onu_contracts %}
                                     <span class="badge bg-success">{{ cn }}</span>
                                 {% endfor %}

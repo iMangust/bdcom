@@ -273,18 +273,20 @@
                                 </td>
                             </tr>
                             <tr>
-                                <th class="bg-light">Основной договор:</th>
+                                <th class="bg-light">Договоры:</th>
                                 <td>
                                     <div class="d-flex justify-content-between align-items-center">
-                                        <span class="badge bg-success" id="main-contract-text">
-                                            {% if onu.contract %}{{ onu.contract }}{% else %}N/A{% endif %}
-                                        </span>
-                                        {# Если на ONU более одного договора — показываем их столбиком бэджами #}
-                                        {% set extra_contracts = (onu.all_contracts or [])[1:] %}
-                                        <div class="d-flex flex-column align-items-start gap-1 mt-1" id="extra-contracts-list">
-                                            {% for cn in extra_contracts %}
-                                                <span class="badge bg-success">{{ cn }}</span>
-                                            {% endfor %}
+                                        {# Единый стандарт: ВСЕ договоры бэджами столбиком (без ограничений). Логины/IP не выводятся. #}
+                                        {% set onu_all_contracts = onu.all_contracts or ([onu.contract] if onu.contract else []) %}
+                                        <div class="d-flex flex-column align-items-start gap-1" id="extra-contracts-list"
+                                             title="Договоры: {{ onu_all_contracts|join(', ') if onu_all_contracts else '' }}">
+                                            {% if onu_all_contracts %}
+                                                {% for cn in onu_all_contracts %}
+                                                    <span class="badge bg-success">{{ cn }}</span>
+                                                {% endfor %}
+                                            {% else %}
+                                                <span class="badge bg-secondary" id="main-contract-text">N/A</span>
+                                            {% endif %}
                                         </div>
                                         <button class="btn btn-sm btn-outline-info ms-2" onclick="loadAllContracts()"
                                                 title="Показать все договоры">
@@ -835,6 +837,7 @@ function loadAllContracts() {
             loading.style.display = 'none';
             if (data.status === 'success' && data.contracts.length > 0) {
                 document.getElementById('contracts-count').textContent = data.contracts.length;
+                refreshContractsBlock(data.contracts.map(c => c.contract_number));
                 let html = `
                     <div class="alert alert-info">
                         <i class="bi bi-info-circle"></i> Найдено ${data.contracts.length} договоров для этого терминала
@@ -842,7 +845,7 @@ function loadAllContracts() {
                     <div class="table-responsive">
                         <table class="table table-sm table-hover">
                             <thead class="table-light">
-                                <tr><th>Договор</th><th>MAC</th><th>Логин</th><th>IP</th><th>Загружен</th><th>Статус</th><th>Действия</th></tr>
+                                <tr><th>Договор</th><th>MAC</th><th>Загружен</th><th>Статус</th><th>Действия</th></tr>
                             </thead>
                             <tbody>`;
                 data.contracts.forEach(contract => {
@@ -854,8 +857,6 @@ function loadAllContracts() {
                         <tr class="${isMain ? 'table-success' : ''}">
                             <td><strong>${escapeHtml(contract.contract_number)}</strong>${isMain ? '<i class="bi bi-star-fill text-warning ms-1"></i>' : ''}</td>
                             <td><code class="text-primary">${escapeHtml(contract.mac_address || 'N/A')}</code></td>
-                            <td>${escapeHtml(contract.login || 'N/A')}</td>
-                            <td>${escapeHtml(contract.ip_address || 'N/A')}</td>
                             <td><small class="text-muted">${escapeHtml(contract.uploaded_at || 'N/A')}</small></td>
                             <td>${statusBadge}</td>
                             <td>
@@ -881,6 +882,20 @@ function loadAllContracts() {
         });
 }
 
+
+// Обновить блок «Договоры» на странице после смены привязок (единый стиль бэджей)
+function refreshContractsBlock(numbers) {
+    const box = document.getElementById('extra-contracts-list');
+    if (!box) return;
+    const list = (numbers || []).filter(Boolean);
+    box.title = list.length ? ('Договоры: ' + list.join(', ')) : '';
+    if (!list.length) {
+        box.innerHTML = '<span class="badge bg-secondary" id="main-contract-text">N/A</span>';
+        return;
+    }
+    box.innerHTML = list.map(cn => `<span class="badge bg-success">${escapeHtml(cn)}</span>`).join('');
+}
+
 function searchContract(contractNumber) {
     window.open(`/contracts?q=${encodeURIComponent(contractNumber)}`, '_blank');
 }
@@ -895,12 +910,10 @@ function searchContractByMAC(macAddress) {
                 let html = `
                     <div class="alert alert-success"><i class="bi bi-check-circle"></i> Найдено ${data.contracts.length} договоров по MAC ${escapeHtml(macAddress)}</div>
                     <div class="table-responsive"><table class="table table-sm">
-                        <thead><tr><th>Договор</th><th>Логин</th><th>IP</th><th>Действия</th></tr></thead><tbody>`;
+                        <thead><tr><th>Договор</th><th>Действия</th></tr></thead><tbody>`;
                 data.contracts.forEach(contract => {
                     html += `<tr>
                         <td><strong>${escapeHtml(contract.contract_number)}</strong></td>
-                        <td>${escapeHtml(contract.login || 'N/A')}</td>
-                        <td>${escapeHtml(contract.ip_address || 'N/A')}</td>
                         <td><button class="btn btn-sm btn-outline-primary" onclick="window.open('/contracts?q=${encodeURIComponent(contract.contract_number)}', '_blank')"><i class="bi bi-eye"></i></button></td>
                     </tr>`;
                 });
@@ -934,9 +947,7 @@ function setAsMainContract(contractNumber) {
         .then(data => {
             if (data.status === 'success') {
                 showNotification('Основной договор обновлен', 'success');
-                document.getElementById('main-contract-text').textContent = contractNumber;
-                document.getElementById('main-contract-text').className = 'badge bg-success';
-                setTimeout(() => { loadAllContracts(); }, 1000);
+                setTimeout(() => { window.location.reload(); }, 1000);
             } else {
                 showNotification('Ошибка: ' + data.message, 'danger');
             }
