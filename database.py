@@ -1222,10 +1222,21 @@ def _onu_row_dict(onu, contracts_map=None):
     """
     key = (onu.device_id, onu.interface)
     contract = None
+    all_contracts = []
     if contracts_map:
-        contract = contracts_map.get(key)
+        entry = contracts_map.get(key)
+        # get_contracts_map_for_onus возвращает dict {'main', 'all'};
+        # строка допускается для обратной совместимости старых вызовов.
+        if isinstance(entry, dict):
+            contract = entry.get('main')
+            all_contracts = list(entry.get('all') or [])
+        elif entry:
+            contract = str(entry)
+            all_contracts = [c.strip() for c in contract.split(',') if c.strip()]
     if not contract:
         contract = onu.contract if onu.contract and onu.contract != 'N/A' else None
+        if contract and not all_contracts:
+            all_contracts = [contract]
     moved_to_device_id, moved_to_iface, moved_to_device_name = parse_moved_location(onu.moved_to)
     moved_from_device_id, moved_from_iface, moved_from_device_name = parse_moved_location(onu.moved_from)
     return {
@@ -1235,6 +1246,7 @@ def _onu_row_dict(onu, contracts_map=None):
         'mac': onu.mac,
         'description': onu.description if onu.description and onu.description != 'N/A' else None,
         'contract': contract,
+        'all_contracts': all_contracts or ([contract] if contract else []),
         'status': onu.status,
         'dereg_reason': onu.dereg_reason,
         'optical_power': onu.optical_power,
@@ -1261,20 +1273,33 @@ def _onu_row_dict(onu, contracts_map=None):
 def enrich_rows_with_contract_details(session, rows):
     """Дополняет строки ONU данными договора (логин/IP/доп.инфо) из справочника contracts.
 
-    Номера договоров собираются из поля 'contract' И из 'extra_contracts'
-    (список всех привязок), чтобы логин/IP были доступны для каждой привязки
-    на странице детали ONU и в экспорте.
+    Номера договоров собираются из поля 'contract', 'all_contracts' (все привязки
+    в едином стандарте — UI выводит их столбиками-badges) и legacy 'extra_contracts'.
+    Результат: contract_login/contract_ip для основного договора и contracts_details
+    {номер -> {login, ip, additional_info}} для каждой привязки.
     """
-    numbers = set()
-    for r in rows:
+    def _collect_numbers(r):
+        nums = []
+        for src in (r.get('all_contracts') or [],):
+            for c in src:
+                c = str(c).strip() if c is not None else ''
+                if c and c not in nums:
+                    nums.append(c)
         if r.get('contract'):
             for part in str(r['contract']).split(','):
                 p = part.strip()
-                if p:
-                    numbers.add(p)
+                if p and p not in nums:
+                    nums.append(p)
         for ec in (r.get('extra_contracts') or []):
             if ec:
-                numbers.add(str(ec).strip())
+                p = str(ec).strip()
+                if p and p not in nums:
+                    nums.append(p)
+        return nums
+
+    numbers = set()
+    for r in rows:
+        numbers.update(_collect_numbers(r))
     numbers.discard('')
     if not numbers:
         return rows
@@ -1289,23 +1314,14 @@ def enrich_rows_with_contract_details(session, rows):
     except Exception as e:
         logger.error(f"Error enriching contract details: {e}")
     for r in rows:
+        all_numbers = _collect_numbers(r)
+        r['all_contracts'] = all_numbers
         cn = str(r['contract']).split(',')[0].strip() if r.get('contract') else None
         d = info.get(cn) if cn else None
         r['contract_login'] = (d or {}).get('login')
         r['contract_ip'] = (d or {}).get('ip')
         # Полный набор данных по каждой привязке (для детали ONU и экспорта):
         # номер -> {login, ip, additional_info}
-        all_numbers = []
-        if cn:
-            all_numbers.append(cn)
-        if r.get('contract'):
-            for part in str(r['contract']).split(','):
-                p = part.strip()
-                if p and p not in all_numbers:
-                    all_numbers.append(p)
-        for ec in (r.get('extra_contracts') or []):
-            if ec and ec not in all_numbers:
-                all_numbers.append(ec)
         r['contracts_details'] = {
             num: info[num] for num in all_numbers if num in info
         }
@@ -2391,21 +2407,34 @@ Contract.normalized_mac, Contract.contract_number
 
     for k in keys:
         data = found[k]
-        if data['main']:
-            result[k] = data['main']
-        elif data['extra']:
-            shown = data['extra'][:3]
-            more = len(data['extra']) - len(shown)
-            result[k] = ', '.join(shown) + (f' +{more}' if more > 0 else '')
+        # Единый стандарт: если на ONU несколько договоров, основной показывается
+        # отдельно, а все привязки — в 'all_contracts' (UI выводит их столбиками-badges).
+        result[k] = {'main': data['main'], 'all': _merge_contract_lists(data['main'], data['extra'])}
 
 
     direct = session.query(ONU.device_id, ONU.interface, ONU.contract).filter(
 tuple_(ONU.device_id, ONU.interface).in_(keys)).all()
     for did, iface, cn in direct:
         k = (did, iface)
-        if k in key_set and not result.get(k) and cn and cn != 'N/A':
-            result[k] = str(cn)
+        if k not in key_set or not cn or cn == 'N/A':
+            continue
+        entry = result.get(k)
+        if not isinstance(entry, dict) or (not entry['main'] and not entry['all']):
+            # Legacy: договор прописан прямо в ONU.contract, привязок нет
+            result[k] = {'main': str(cn), 'all': [str(cn)]}
+
+
     return result
+
+
+def _merge_contract_lists(main, extra):
+    """Объединяет основной договор и дополнительные в упорядоченный список без дублей."""
+    out = []
+    for cn in ([main] if main else []) + list(extra or []):
+        cn = str(cn).strip() if cn is not None else ''
+        if cn and cn not in out:
+            out.append(cn)
+    return out
 
 
 def find_duplicate_onus(session, limit=50):
@@ -2483,7 +2512,14 @@ ONU.mac.isnot(None),
             cmap = get_contracts_map_for_onus(
 session, [(o['device_id'], o['interface']) for o in all_occ])
             for occ in all_occ:
-                occ['contract'] = cmap.get((occ['device_id'], occ['interface']))                    or (occ.get('contract') if occ.get('contract') and occ.get('contract') != 'N/A' else None)
+                entry = cmap.get((occ['device_id'], occ['interface'])) or {}
+                if isinstance(entry, dict):
+                    main_cn = entry.get('main')
+                    occ['contract'] = main_cn or (occ.get('contract') if occ.get('contract') and occ.get('contract') != 'N/A' else None)
+                    occ['all_contracts'] = entry.get('all') or ([occ['contract']] if occ.get('contract') else [])
+                else:
+                    occ['contract'] = entry or (occ.get('contract') if occ.get('contract') and occ.get('contract') != 'N/A' else None)
+                    occ['all_contracts'] = [occ['contract']] if occ.get('contract') else []
         except Exception as e:
             logger.warning(f"Не удалось обогатить дубликаты договорами: {e}")
 

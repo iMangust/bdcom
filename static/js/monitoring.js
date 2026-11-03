@@ -145,21 +145,21 @@ const monitoring = {
 	},
 
     _contractCell(item) {
-        const cn = item && item.contract && item.contract !== 'N/A' ? item.contract : null;
-        if (!cn) return '<span class="text-muted">\u2014</span>';
-        // Единый стандарт: договор + логин/IP клиента из справочника договоров.
-        const login = item.contract_login && item.contract_login !== 'N/A' ? item.contract_login : null;
-        const ip = item.contract_ip && item.contract_ip !== 'N/A' ? item.contract_ip : null;
-        const titleBits = [cn];
-        if (login) titleBits.push('Логин: ' + login);
-        if (ip) titleBits.push('IP: ' + ip);
-        let html = `<code class="font-monospace" title="${escapeHtml(titleBits.join(' | '))}">${escapeHtml(cn)}</code>`;
-        if (login) {
-            html += `<div class="small text-muted text-truncate" style="max-width:160px;">${escapeHtml(login)}</div>`;
+        // Единый стандарт: договоры выводятся столбиками-badges (до 3 + «+N»).
+        // Логины/IP в списках ONU НЕ показываются.
+        const list = (item && Array.isArray(item.all_contracts) && item.all_contracts.length)
+            ? item.all_contracts
+            : (item && item.contract && item.contract !== 'N/A'
+                ? String(item.contract).split(',').map(s => s.trim()).filter(Boolean)
+                : []);
+        if (!list.length) return '<span class="text-muted">\u2014</span>';
+        const shown = list.slice(0, 3);
+        let html = shown.map(cn => `<span class="badge bg-success">${escapeHtml(cn)}</span>`).join(' ');
+        if (list.length > 3) {
+            html += ` <span class="badge bg-primary" title="${escapeHtml(list.slice(3).join(', '))}">+${list.length - 3}</span>`;
         }
         return html;
     },
-
     _deviceBadges(item) {
         let badges = '';
         if (item.is_moved || item.moved_to || item.moved_from) {

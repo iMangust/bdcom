@@ -44,6 +44,7 @@ set_onu_contract, find_duplicate_onus, get_onu_contracts as db_get_onu_contracts
 cleanup_moved_onus, get_moved_onus, is_mcd, get_mcd_onus,
 get_onu_list_by_filter, delete_onu_safely, delete_device_completely,
 refresh_db_device_names, get_contracts_map_for_onus,
+enrich_rows_with_contract_details, _merge_contract_lists,
 get_signal_trend_series, get_availability_stats, get_daily_availability,
 get_outage_events, get_degraded_onus, get_signal_histogram,
 get_onu_state_history, get_top_worst_onus, get_history_actions_summary,
@@ -1758,14 +1759,14 @@ Contract.normalized_mac.in_(list(candidates))).distinct().limit(20).all()
         return found
 
     def contract_field(onu):
+        # Единый стандарт: основной договор + все привязки списком
+        # (UI выводит их столбиками-badges, логины не показываются).
         data = get_contracts_for_onu(onu)
-        if data['main']:
-            return data['main']
-        if data['extra']:
-            shown = data['extra'][:3]
-            more = len(data['extra']) - len(shown)
-            return ', '.join(shown) + (f' +{more}' if more > 0 else '')
-        return onu.contract if onu.contract and onu.contract != 'N/A' else None
+        all_cns = _merge_contract_lists(data['main'], data['extra'])
+        if not all_cns:
+            legacy = onu.contract if onu.contract and onu.contract != 'N/A' else None
+            all_cns = [c.strip() for c in str(legacy).split(',') if c.strip()] if legacy else []
+        return {'main': all_cns[0] if all_cns else None, 'all': all_cns}
 
     def add_result(onu, rtype, match_type, mac_display=None):
         key = (onu.device_id, onu.interface)
@@ -1924,6 +1925,13 @@ ONUClientMAC.mac_address.ilike(like_pattern(query), escape=LIKE_ESCAPE)).all()
 
         results.sort(key=sort_key)
 
+        # Единый стандарт: договоры в виде {main, all} + логин/IP основного
+        # договора из справочника (в UI логины не показываются — только номера).
+        for r in results:
+            cf = r.get('contract') or {}
+            r['all_contracts'] = cf.get('all') or []
+            r['contract'] = cf.get('main')
+        enrich_rows_with_contract_details(session_db, results)
 
         mac_groups = {}
         for result in results:

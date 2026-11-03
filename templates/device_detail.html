@@ -400,12 +400,14 @@
                         {% if onu.is_mcd %}<strong>{{ onu.description }}</strong>{% else %}{{ onu.description }}{% endif %}
                     </td>
                     <td>
-                        {% if onu.contract %}
-                            <span class="badge bg-success" title="{{ onu.contract }}{% if onu.contract_login %} | Логин: {{ onu.contract_login }}{% endif %}{% if onu.contract_ip %} | IP: {{ onu.contract_ip }}{% endif %}">
-                                {{ onu.contract[:12] }}{% if onu.contract|length > 12 %}...{% endif %}
-                            </span>
-                            {% if onu.contract_login %}
-                            <div class="small text-muted text-truncate" style="max-width:140px;" title="Логин: {{ onu.contract_login }}{{ ' | IP: ' ~ onu.contract_ip if onu.contract_ip }}">{{ onu.contract_login }}</div>
+                        {% set onu_contracts = onu.all_contracts or ([onu.contract] if onu.contract else []) %}
+                        {% if onu_contracts %}
+                            {# Единый стиль: договоры столбиками-badges. Логины/IP не выводятся. #}
+                            {% for cn in onu_contracts[:3] %}
+                                <span class="badge bg-success">{{ cn[:12] }}{% if cn|length > 12 %}...{% endif %}</span>
+                            {% endfor %}
+                            {% if onu_contracts|length > 3 %}
+                                <span class="badge bg-primary" title="{{ onu_contracts[3:]|join(', ') }}">+{{ onu_contracts|length - 3 }}</span>
                             {% endif %}
                         {% else %}
                             <span class="badge bg-secondary">—</span>
