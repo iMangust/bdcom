@@ -1254,8 +1254,22 @@ def _onu_row_dict(onu, contracts_map=None):
 
 
 def enrich_rows_with_contract_details(session, rows):
-    """Дополняет строки ONU данными договора (логин/IP) из справочника contracts."""
-    numbers = {str(r['contract']).split(',')[0].strip() for r in rows if r.get('contract')}
+    """Дополняет строки ONU данными договора (логин/IP/доп.инфо) из справочника contracts.
+
+    Номера договоров собираются из поля 'contract' И из 'extra_contracts'
+    (список всех привязок), чтобы логин/IP были доступны для каждой привязки
+    на странице детали ONU и в экспорте.
+    """
+    numbers = set()
+    for r in rows:
+        if r.get('contract'):
+            for part in str(r['contract']).split(','):
+                p = part.strip()
+                if p:
+                    numbers.add(p)
+        for ec in (r.get('extra_contracts') or []):
+            if ec:
+                numbers.add(str(ec).strip())
     numbers.discard('')
     if not numbers:
         return rows
@@ -1274,6 +1288,22 @@ def enrich_rows_with_contract_details(session, rows):
         d = info.get(cn) if cn else None
         r['contract_login'] = (d or {}).get('login')
         r['contract_ip'] = (d or {}).get('ip')
+        # Полный набор данных по каждой привязке (для детали ONU и экспорта):
+        # номер -> {login, ip, additional_info}
+        all_numbers = []
+        if cn:
+            all_numbers.append(cn)
+        if r.get('contract'):
+            for part in str(r['contract']).split(','):
+                p = part.strip()
+                if p and p not in all_numbers:
+                    all_numbers.append(p)
+        for ec in (r.get('extra_contracts') or []):
+            if ec and ec not in all_numbers:
+                all_numbers.append(ec)
+        r['contracts_details'] = {
+            num: info[num] for num in all_numbers if num in info
+        }
     return rows
 
 
@@ -1692,38 +1722,20 @@ ONUClientMAC.onu_interface.in_(onu_interfaces)
 'type': mac.type, 'port': mac.port,
 })
 
-        onu_info = []
-        for onu in onus:
+        # Единый стандарт строки ONU (_onu_row_dict): включает договор из
+        # справочника привязок ONUContract, статус сигнала, МКД/переезд —
+        # ту же информацию, что и поиск/списки. Поля ниже дополняют стандарт
+        # live-данными опроса (клиентские MAC, normalized_mac, bind_type).
+        cmap = get_contracts_map_for_onus(session, [(o.device_id, o.interface) for o in onus])
+        onu_info = [_onu_row_dict(o, cmap) for o in onus]
+        for onu, row in zip(onus, onu_info):
             full_iface = f"{device_id}:{onu.interface}"
-            moved_to_device_id, moved_to_iface, moved_to_device_name = parse_moved_location(onu.moved_to)
-            moved_from_device_id, moved_from_iface, moved_from_device_name = parse_moved_location(onu.moved_from)
-
-            onu_data = {
-'interface': onu.interface, 'vendor': onu.vendor, 'model': onu.model,
-'mac': onu.mac, 'normalized_mac': onu.normalized_mac,
-'description': onu.description, 'contract': onu.contract,
-'bind_type': onu.bind_type, 'status': onu.status,
-'dereg_reason': onu.dereg_reason, 'optical_power': onu.optical_power,
-'client_macs': macs_by_interface.get(full_iface, []),
-'client_macs_count': onu.client_macs_count,
-'optical_status': get_optical_status(onu.optical_power),
-'moved_to': onu.moved_to,
-'moved_from': onu.moved_from,
-'moved_at': onu.moved_at.strftime('%Y-%m-%d %H:%M:%S') if onu.moved_at else None,
-'moved_to_device_id': moved_to_device_id,
-'moved_to_device_name': moved_to_device_name,
-'moved_to_interface': moved_to_iface,
-'moved_from_device_id': moved_from_device_id,
-'moved_from_device_name': moved_from_device_name,
-'moved_from_interface': moved_from_iface,
-'is_moved': onu.moved_to is not None or onu.moved_from is not None,
-'is_moved_to': onu.moved_to is not None,
-'is_moved_from': onu.moved_from is not None,
-'is_configured': onu.is_configured,
-'is_mcd': is_mcd(onu.description),
-'last_seen': onu.last_seen.strftime('%Y-%m-%d %H:%M:%S') if onu.last_seen else None,
-}
-            onu_info.append(onu_data)
+            row['normalized_mac'] = onu.normalized_mac
+            row['bind_type'] = onu.bind_type
+            row['client_macs'] = macs_by_interface.get(full_iface, [])
+            row['is_active'] = onu.is_active
+            row['device_id'] = onu.device_id
+        enrich_rows_with_contract_details(session, onu_info)
 
         return {
 'onu_info': onu_info,
