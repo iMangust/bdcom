@@ -276,14 +276,26 @@
                                 <th class="bg-light">Договоры:</th>
                                 <td>
                                     <div class="d-flex justify-content-between align-items-center">
-                                        {# Единый стандарт: ВСЕ договоры бэджами столбиком (без ограничений). Логины/IP не выводятся. #}
+                                        {# Единый стандарт: договоры бэджами столбиком со спойлером «+N» (свернуто до 3). Логины/IP не выводятся. #}
                                         {% set onu_all_contracts = onu.all_contracts or ([onu.contract] if onu.contract else []) %}
-                                        <div class="d-flex flex-column align-items-start gap-1" id="extra-contracts-list"
-                                             title="Договоры: {{ onu_all_contracts|join(', ') if onu_all_contracts else '' }}">
+                                        {% set CONTRACT_LIMIT = 3 %}
+                                        <div class="d-flex flex-column align-items-start gap-1" id="extra-contracts-list">
                                             {% if onu_all_contracts %}
-                                                {% for cn in onu_all_contracts %}
+                                                {% for cn in onu_all_contracts[:CONTRACT_LIMIT] %}
                                                     <span class="badge bg-success">{{ cn }}</span>
                                                 {% endfor %}
+                                                {% if onu_all_contracts|length > CONTRACT_LIMIT %}
+                                                    <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 contract-toggle"
+                                                            data-shown="{{ CONTRACT_LIMIT }}" data-total="{{ onu_all_contracts|length }}"
+                                                            aria-expanded="false" title="Показать все договоры ({{ onu_all_contracts|length }})">
+                                                        +{{ onu_all_contracts|length - CONTRACT_LIMIT }}
+                                                    </button>
+                                                    <div class="d-none d-flex flex-column align-items-start gap-1 contract-more">
+                                                        {% for cn in onu_all_contracts[CONTRACT_LIMIT:] %}
+                                                            <span class="badge bg-success">{{ cn }}</span>
+                                                        {% endfor %}
+                                                    </div>
+                                                {% endif %}
                                             {% else %}
                                                 <span class="badge bg-secondary" id="main-contract-text">N/A</span>
                                             {% endif %}
@@ -883,17 +895,26 @@ function loadAllContracts() {
 }
 
 
-// Обновить блок «Договоры» на странице после смены привязок (единый стиль бэджей)
+// Обновить блок «Договоры» на странице после смены привязок
+// (единый стиль бэджей со спойлером «+N», как в списках)
 function refreshContractsBlock(numbers) {
     const box = document.getElementById('extra-contracts-list');
     if (!box) return;
     const list = (numbers || []).filter(Boolean);
-    box.title = list.length ? ('Договоры: ' + list.join(', ')) : '';
     if (!list.length) {
         box.innerHTML = '<span class="badge bg-secondary" id="main-contract-text">N/A</span>';
         return;
     }
-    box.innerHTML = list.map(cn => `<span class="badge bg-success">${escapeHtml(cn)}</span>`).join('');
+    const LIMIT = 3;
+    const badges = list.map(cn => `<span class="badge bg-success">${escapeHtml(cn)}</span>`);
+    let html = badges.slice(0, LIMIT).join('');
+    if (list.length > LIMIT) {
+        html += `<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 contract-toggle" ` +
+            `data-shown="${LIMIT}" data-total="${list.length}" aria-expanded="false" ` +
+            `title="Показать все договоры (${list.length})">+${list.length - LIMIT}</button>` +
+            `<div class="d-none d-flex flex-column align-items-start gap-1 contract-more">${badges.slice(LIMIT).join('')}</div>`;
+    }
+    box.innerHTML = html;
 }
 
 function searchContract(contractNumber) {

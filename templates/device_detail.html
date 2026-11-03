@@ -402,11 +402,24 @@
                     <td>
                         {% set onu_contracts = onu.all_contracts or ([onu.contract] if onu.contract else []) %}
                         {% if onu_contracts %}
-                            {# Единый стиль: ВСЕ договоры бэджами столбиком (без ограничений). Логины/IP не выводятся. #}
-                            <div class="d-flex flex-column align-items-start gap-1" title="Договоры: {{ onu_contracts|join(', ') }}">
-                                {% for cn in onu_contracts %}
+                            {# Единый стиль: договоры бэджами столбиком со спойлером «+N» (свернуто до 3). Логины/IP не выводятся. #}
+                            {% set CONTRACT_LIMIT = 3 %}
+                            <div class="d-flex flex-column align-items-start gap-1">
+                                {% for cn in onu_contracts[:CONTRACT_LIMIT] %}
                                     <span class="badge bg-success">{{ cn }}</span>
                                 {% endfor %}
+                                {% if onu_contracts|length > CONTRACT_LIMIT %}
+                                    <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 contract-toggle"
+                                            data-shown="{{ CONTRACT_LIMIT }}" data-total="{{ onu_contracts|length }}"
+                                            aria-expanded="false" title="Показать все договоры ({{ onu_contracts|length }})">
+                                        +{{ onu_contracts|length - CONTRACT_LIMIT }}
+                                    </button>
+                                    <div class="d-none d-flex flex-column align-items-start gap-1 contract-more">
+                                        {% for cn in onu_contracts[CONTRACT_LIMIT:] %}
+                                            <span class="badge bg-success">{{ cn }}</span>
+                                        {% endfor %}
+                                    </div>
+                                {% endif %}
                             </div>
                         {% else %}
                             <span class="badge bg-secondary">—</span>

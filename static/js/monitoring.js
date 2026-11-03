@@ -145,19 +145,29 @@ const monitoring = {
 	},
 
     _contractCell(item) {
-        // Единый стандарт: ВСЕ договоры выводятся бэджами столбиком (без ограничений и «+N»).
+        // Единый стандарт: договоры бэджами столбиком со спойлером.
+        // По умолчанию показываем не более COLLAPSE_LIMIT, остальные — по клику на «+N».
         // Логины/IP в списках ONU НЕ показываются.
+        const COLLAPSE_LIMIT = 3;
         const list = (item && Array.isArray(item.all_contracts) && item.all_contracts.length)
             ? item.all_contracts
             : (item && item.contract && item.contract !== 'N/A'
                 ? String(item.contract).split(',').map(s => s.trim()).filter(Boolean)
                 : []);
         if (!list.length) return '<span class="text-muted">\u2014</span>';
-        // title = полный список договоров (если их много — видно все при наведении)
-        const fullTitle = 'Договоры: ' + list.join(', ');
-        return `<div class="d-flex flex-column align-items-start gap-1" title="${escapeHtml(fullTitle)}">` +
-            list.map(cn => `<span class="badge bg-success">${escapeHtml(cn)}</span>`).join('') +
-            '</div>';
+        const badges = list.map(cn => `<span class="badge bg-success">${escapeHtml(cn)}</span>`);
+        let body;
+        if (list.length <= COLLAPSE_LIMIT) {
+            body = badges.join('');
+        } else {
+            const hiddenCount = list.length - COLLAPSE_LIMIT;
+            body = badges.slice(0, COLLAPSE_LIMIT).join('') +
+                `<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 contract-toggle" ` +
+                `data-shown="${COLLAPSE_LIMIT}" data-total="${list.length}" aria-expanded="false" ` +
+                `title="Показать все договоры (${list.length})">+${hiddenCount}</button>` +
+                `<div class="d-none d-flex flex-column align-items-start gap-1 contract-more">${badges.slice(COLLAPSE_LIMIT).join('')}</div>`;
+        }
+        return `<div class="d-flex flex-column align-items-start gap-1">${body}</div>`;
     },
     _deviceBadges(item) {
         let badges = '';

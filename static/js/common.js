@@ -125,3 +125,28 @@ window.showNotification = function showNotification(message, type = 'info', time
     document.body.appendChild(alert);
     setTimeout(() => { if (alert.parentNode) bootstrap.Alert.getOrCreateInstance(alert).close(); }, timeoutMs);
 };
+
+// Единый делегированный обработчик спойлера договоров («+N» / «Свернуть»).
+// Подключается через base.html (common.js), поэтому работает на всех страницах:
+// мониторинг, статистика, детали устройства и детали ONU (в т.ч. серверный HTML).
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.contract-toggle');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const container = btn.parentElement;
+    const more = container ? container.querySelector('.contract-more') : null;
+    if (!more) return;
+    const expanded = !more.classList.contains('d-none');
+    if (expanded) {
+        more.classList.add('d-none');
+        btn.textContent = `+${btn.dataset.total - btn.dataset.shown}`;
+        btn.title = `Показать все договоры (${btn.dataset.total})`;
+        btn.setAttribute('aria-expanded', 'false');
+    } else {
+        more.classList.remove('d-none');
+        btn.textContent = 'Свернуть';
+        btn.title = 'Свернуть список договоров';
+        btn.setAttribute('aria-expanded', 'true');
+    }
+});
