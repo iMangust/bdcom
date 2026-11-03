@@ -420,6 +420,29 @@
     </div>
 </div>
 
+<div class="card mb-4">
+    <div class="card-header bg-primary text-white py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h6 class="mb-0"><i class="bi bi-graph-up-arrow"></i> История уровня сигнала (временной ряд)</h6>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Период истории сигнала">
+            <button type="button" class="btn btn-outline-light signal-days-btn active" data-days="7">7 дней</button>
+            <button type="button" class="btn btn-outline-light signal-days-btn" data-days="14">14 дней</button>
+            <button type="button" class="btn btn-outline-light signal-days-btn" data-days="30">30 дней</button>
+            <button type="button" class="btn btn-outline-light signal-days-btn" data-days="90">90 дней</button>
+        </div>
+    </div>
+    <div class="card-body">
+        <div style="position: relative; height: 300px;">
+            <canvas id="onu-signal-chart"></canvas>
+        </div>
+        <div id="onu-signal-empty" class="text-center text-muted small py-4" style="display:none;">
+            <i class="bi bi-inbox fs-3 d-block mb-1"></i>
+            Нет сохранённых замеров сигнала для этой ONU за выбранный период.
+            Данные накапливаются автоматически при каждом сканировании устройства.
+        </div>
+        <div id="onu-signal-summary" class="small text-muted mt-2"></div>
+    </div>
+</div>
+
 {% if role == 'admin' and onu.is_moved_to %}
 {% set target_name = onu.moved_to_device_name or onu.moved_to %}
 {% set target_device_id = onu.moved_to_device_id or '' %}
@@ -1150,4 +1173,103 @@ function showDeleteHelp() {
 }
 @keyframes op-spin { to { transform: rotate(360deg); } }
 </style>
+
+<script>
+// ---------- История уровня сигнала ONU (временной ряд onu_state) ----------
+(function () {
+    'use strict';
+    const canvas = document.getElementById('onu-signal-chart');
+    if (!canvas) return;
+    let chart = null;
+    let currentDays = 7;
+
+    function csrfToken() {
+        const m = document.querySelector('meta[name="csrf-token"]');
+        return m ? m.getAttribute('content') : '';
+    }
+
+    async function load(days) {
+        currentDays = days;
+        const emptyEl = document.getElementById('onu-signal-empty');
+        const summaryEl = document.getElementById('onu-signal-summary');
+        try {
+            const resp = await fetch(`/api/stats/onu_history/${encodeURIComponent(CURRENT_DEVICE_ID)}` +
+                `?interface=${encodeURIComponent(CURRENT_INTERFACE)}&days=${days}&csrf_token=${encodeURIComponent(csrfToken())}`);
+            const data = await resp.json();
+            const points = data.points || [];
+            if (!points.length) {
+                if (chart) { chart.destroy(); chart = null; }
+                canvas.style.display = 'none';
+                emptyEl.style.display = 'block';
+                summaryEl.textContent = '';
+                return;
+            }
+            canvas.style.display = 'block';
+            emptyEl.style.display = 'none';
+
+            const labels = points.map(p => p.time);
+            const powers = points.map(p => p.power);
+            const offs = points.map((p, i) => (p.is_online ? null : powers[i]));
+            const valid = powers.filter(v => v !== null && v !== undefined);
+            const min = Math.min(...valid), max = Math.max(...valid);
+            const first = valid[0], last = valid[valid.length - 1];
+            const delta = (last - first).toFixed(2);
+            summaryEl.innerHTML = `Замеров: <strong>${points.length}</strong> за ${days} дн. | ` +
+                `мин: <strong>${min.toFixed(2)}</strong> / макс: <strong>${max.toFixed(2)}</strong> дБм | ` +
+                `изменение за период: <strong class="${delta < 0 ? 'text-danger' : 'text-success'}">${delta > 0 ? '+' : ''}${delta}</strong> дБ`;
+
+            if (typeof Chart === 'undefined') {
+                summaryEl.insertAdjacentHTML('afterend',
+                    '<div class="text-center text-muted small py-2">Библиотека графиков (Chart.js) недоступна — проверьте подключение к CDN.</div>');
+                return;
+            }
+            if (chart) chart.destroy();
+            chart = new Chart(canvas, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Уровень сигнала, дБм',
+                            data: powers,
+                            borderColor: '#0d6efd',
+                            backgroundColor: 'rgba(13,110,253,.08)',
+                            pointRadius: 2, borderWidth: 2, tension: .25, fill: true, spanGaps: true
+                        },
+                        {
+                            label: 'ONU офлайн',
+                            data: offs,
+                            borderColor: '#dc3545', backgroundColor: '#dc3545',
+                            pointStyle: 'crossRot', pointRadius: 6, showLine: false
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        y: { title: { display: true, text: 'дБм' }, suggestedMin: min - 1, suggestedMax: max + 1 },
+                        x: { ticks: { maxTicksLimit: 12, autoSkip: true } }
+                    },
+                    plugins: { legend: { position: 'bottom' } }
+                }
+            });
+        } catch (e) {
+            summaryEl.textContent = 'Ошибка загрузки истории сигнала: ' + e.message;
+        }
+    }
+
+    document.querySelectorAll('.signal-days-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.signal-days-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            load(parseInt(btn.dataset.days, 10));
+        });
+    });
+
+    // Chart.js подгружается асинхронно в extra_js — дожидаемся его перед стартом
+    function start() { load(currentDays); }
+    if (typeof Chart !== 'undefined') start();
+    else window.addEventListener('load', start);
+})();
+</script>
 {% endblock %}

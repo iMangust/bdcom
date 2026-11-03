@@ -1111,28 +1111,29 @@ def get_degraded_onus(session, delta_threshold=3.0, days=7, min_current=-24.0, l
             if power is not None:
                 last_map[key] = float(power)
 
-        cur = session.query(ONU).with_entities(
-            ONU.device_id, ONU.interface, ONU.device_name, ONU.mac,
-            ONU.description, ONU.contract, ONU.optical_power
-        ).filter(ONU.optical_power.isnot(None), ONU.is_configured.is_(True)).all()
+        cur = session.query(ONU).filter(
+            ONU.optical_power.isnot(None), ONU.is_configured.is_(True)
+        ).all()
+
+        # Единый стандарт строк ONU (договор из справочника привязок +
+        # логин/IP клиента), к которому добавляются поля временного ряда.
+        base_rows = _standardized_onu_rows(session, cur)
+        power_by_key = {(o.device_id, o.interface): o.optical_power for o in cur}
 
         results = []
-        for did, iface, dname, mac, desc, contract, power in cur:
-            first_power = first_map.get((did, iface))
+        for row in base_rows:
+            key = (row['device_id'], row['interface'])
+            power = power_by_key.get(key)
+            first_power = first_map.get(key)
             if first_power is None or power is None:
                 continue
             delta = float(first_power) - float(power)  # > 0 => сигнал ухудшился
             if delta >= delta_threshold and float(power) <= min_current:
-                results.append({
-                    'device_id': did, 'device': dname or get_device_name_by_id(did),
-                    'interface': iface, 'mac': mac,
-                    'description': desc if desc and desc != 'N/A' else None,
-                    'contract': contract,
-                    'current_power': round(float(power), 2),
-                    'first_power': round(float(first_power), 2),
-                    'delta_db': round(delta, 2),
-                    'optical_status': get_optical_status(power),
-                })
+                row['current_power'] = round(float(power), 2)
+                row['first_power'] = round(float(first_power), 2)
+                row['delta_db'] = round(delta, 2)
+                row['optical_status'] = get_optical_status(power)
+                results.append(row)
         results.sort(key=lambda r: r['delta_db'], reverse=True)
         return {'onus': results[:limit], 'total_count': len(results),
                 'threshold_db': delta_threshold, 'days': days}
@@ -1168,7 +1169,11 @@ def get_onu_state_history(session, device_id, interface, days=30, limit=5000):
         ).filter(ONUState.device_id == device_id, ONUState.interface == interface,
                  ONUState.recorded_at >= since).order_by(ONUState.recorded_at).limit(limit).all()
         return {
-            'points': [[r[0].strftime('%Y-%m-%d %H:%M'), r[1], bool(r[2]), r[3], r[4]] for r in rows],
+            'points': [{
+                'time': r[0].strftime('%Y-%m-%d %H:%M'),
+                'power': r[1], 'is_online': bool(r[2]),
+                'status': r[3], 'dereg_reason': r[4],
+            } for r in rows],
             'device_id': device_id, 'interface': interface, 'days': days,
         }
     except Exception as e:

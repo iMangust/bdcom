@@ -410,7 +410,7 @@
                 <td><code class="font-monospace">${esc(r.interface)}</code></td>
                 <td><code>${esc(r.mac) || '—'}</code></td>
                 <td>${contractCell(r)}</td>
-                <td>${esc(r.description) || '—'}</td>
+                <td class="text-truncate" style="max-width:220px;" title="${esc(r.contract_login || r.description || '')}">${esc(r.contract_login) || esc(r.description) || '—'}</td>
                 <td class="text-truncate" style="max-width:180px;" title="${esc(r.description || '')}">${esc(r.description) || '—'}</td>
                 <td>${r.first_power}</td>
                 <td class="fw-bold text-danger">${r.current_power}</td>
