@@ -37,6 +37,12 @@ _attach_file_handler()
 # позволяло инъекцию второй строки команд ('EPON1/1:1\nconfig terminal').
 INTERFACE_RE = re.compile(r'^(?:EPON|GPON)\d+/\d+:\d+$', re.I)
 
+# Отдельный паттерн для разбора интерфейса на составные части
+# (тип, слот, порт, номер ONU) — используется в delete_onu.
+INTERFACE_PARTS_RE = re.compile(
+    r'^(EPON|GPON)(\d+)/(\d+):(\d+)$', re.I
+)
+
 
 def is_valid_interface(interface) -> bool:
     """Проверка формата интерфейса перед отправкой в команду SSH."""
@@ -392,7 +398,7 @@ max_loops=50,
         if not self.connect():
             return False
         try:
-            match = INTERFACE_RE.fullmatch(interface or '')
+            match = INTERFACE_PARTS_RE.fullmatch(interface or '')
             if not match:
                 logger.error(f"Invalid interface format: {interface}")
                 return False
