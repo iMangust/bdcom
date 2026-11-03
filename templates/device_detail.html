@@ -401,9 +401,12 @@
                     </td>
                     <td>
                         {% if onu.contract %}
-                            <span class="badge bg-success" title="{{ onu.contract }}">
+                            <span class="badge bg-success" title="{{ onu.contract }}{% if onu.contract_login %} | Логин: {{ onu.contract_login }}{% endif %}{% if onu.contract_ip %} | IP: {{ onu.contract_ip }}{% endif %}">
                                 {{ onu.contract[:12] }}{% if onu.contract|length > 12 %}...{% endif %}
                             </span>
+                            {% if onu.contract_login %}
+                            <div class="small text-muted text-truncate" style="max-width:140px;" title="Логин: {{ onu.contract_login }}{{ ' | IP: ' ~ onu.contract_ip if onu.contract_ip }}">{{ onu.contract_login }}</div>
+                            {% endif %}
                         {% else %}
                             <span class="badge bg-secondary">—</span>
                         {% endif %}

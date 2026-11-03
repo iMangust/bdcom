@@ -146,9 +146,18 @@ const monitoring = {
 
     _contractCell(item) {
         const cn = item && item.contract && item.contract !== 'N/A' ? item.contract : null;
-        return cn
-            ? `<code class="font-monospace" title="${escapeHtml(cn)}">${escapeHtml(cn)}</code>`
-            : '<span class="text-muted">\u2014</span>';
+        if (!cn) return '<span class="text-muted">\u2014</span>';
+        // Единый стандарт: договор + логин/IP клиента из справочника договоров.
+        const login = item.contract_login && item.contract_login !== 'N/A' ? item.contract_login : null;
+        const ip = item.contract_ip && item.contract_ip !== 'N/A' ? item.contract_ip : null;
+        const titleBits = [cn];
+        if (login) titleBits.push('Логин: ' + login);
+        if (ip) titleBits.push('IP: ' + ip);
+        let html = `<code class="font-monospace" title="${escapeHtml(titleBits.join(' | '))}">${escapeHtml(cn)}</code>`;
+        if (login) {
+            html += `<div class="small text-muted text-truncate" style="max-width:160px;">${escapeHtml(login)}</div>`;
+        }
+        return html;
     },
 
     _deviceBadges(item) {

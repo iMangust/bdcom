@@ -1033,8 +1033,8 @@ def get_outage_events(session, days=7, limit=300):
         rows = session.query(
             ONUHistory.device_id, ONUHistory.interface, ONUHistory.action,
             ONUHistory.details, ONUHistory.created_at,
-        ).filter(ONUIHistory.created_at >= since).order_by(
-            ONUIHistory.device_id, ONUIHistory.interface, ONUIHistory.created_at
+        ).filter(ONUHistory.created_at >= since).order_by(
+            ONUHistory.device_id, ONUHistory.interface, ONUHistory.created_at
         ).limit(100000).all()
 
         last_action = {}
@@ -1202,9 +1202,9 @@ def get_history_actions_summary(session, days=30):
     """Количество событий onu_history по типам действий за период."""
     try:
         since = now_local() - datetime.timedelta(days=days)
-        rows = session.query(ONUIHistory.action, func.count(ONUIHistory.id)) \
-            .filter(ONUIHistory.created_at >= since) \
-            .group_by(ONUIHistory.action).all()
+        rows = session.query(ONUHistory.action, func.count(ONUHistory.id)) \
+            .filter(ONUHistory.created_at >= since) \
+            .group_by(ONUHistory.action).all()
         return {'actions': [{'action': a, 'count': int(c)} for a, c in rows], 'days': days}
     except Exception as e:
         logger.error(f"Error summarizing history actions: {e}", exc_info=True)
@@ -1733,6 +1733,20 @@ ONUClientMAC.onu_interface.in_(onu_interfaces)
         # live-данными опроса (клиентские MAC, normalized_mac, bind_type).
         cmap = get_contracts_map_for_onus(session, [(o.device_id, o.interface) for o in onus])
         onu_info = [_onu_row_dict(o, cmap) for o in onus]
+        # Договоры в списке устройства могут быть не в cmap (например, legacy-
+        # договор прямо в ONU.contract); достраиваем details по всем номерам.
+        missing_nums = set()
+        for onu, row in zip(onus, onu_info):
+            if row.get('contract') and not row.get('contract_login'):
+                missing_nums.add(row['contract'])
+        if missing_nums:
+            details = {c.contract_number: c for c in session.query(Contract).filter(
+                Contract.contract_number.in_(list(missing_nums))).all()}
+            for row in onu_info:
+                c = details.get(row.get('contract'))
+                if c:
+                    row['contract_login'] = c.login
+                    row['contract_ip'] = c.ip_address
         for onu, row in zip(onus, onu_info):
             full_iface = f"{device_id}:{onu.interface}"
             row['normalized_mac'] = onu.normalized_mac
@@ -1758,10 +1772,10 @@ def get_onu_event_history(session, device_id, interface, days=90, limit=500):
         since = now_local() - datetime.timedelta(days=days)
         rows = session.query(
             ONUHistory.action, ONUHistory.details, ONUHistory.mac, ONUHistory.created_at
-        ).filter(ONUIHistory.device_id == device_id,
-                 ONUIHistory.interface == interface,
-                 ONUIHistory.created_at >= since) \
-            .order_by(ONUIHistory.created_at.desc()).limit(limit).all()
+        ).filter(ONUHistory.device_id == device_id,
+                 ONUHistory.interface == interface,
+                 ONUHistory.created_at >= since) \
+            .order_by(ONUHistory.created_at.desc()).limit(limit).all()
         return {'events': [{
             'action': a, 'details': d, 'mac': m,
             'created_at': ts.strftime('%Y-%m-%d %H:%M') if ts else None,
