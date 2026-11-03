@@ -2481,40 +2481,47 @@ session, [(o['device_id'], o['interface']) for o in all_occ])
 'total_macs_scanned': 0, 'error': INTERNAL_ERROR_MSG
 }
 
+def _standardized_onu_rows(session, onus):
+    """Единый стандарт строк ONU для ВСЕХ списков/выпадающих панелей UI.
+
+    Строка строится через _onu_row_dict (договор из справочника привязок
+    ONUContract + статус сигнала + флаги МКД/переезда), затем обогащается
+    данными договора (логин/IP/доп.инфо) через enrich_rows_with_contract_details.
+    Любой список ONU в приложении обязан проходить через эту функцию, чтобы
+    везде выводилась одинаковая полная информация о клиенте.
+    """
+    cmap = get_contracts_map_for_onus(session, [(o.device_id, o.interface) for o in onus])
+    rows = [_onu_row_dict(o, cmap) for o in onus]
+    enrich_rows_with_contract_details(session, rows)
+    return rows
+
+
+def get_onus_by_ids(session, ids):
+    """Стандартизованные строки ONU по списку id (для групп дубликатов MAC)."""
+    try:
+        if not ids:
+            return []
+        onus = session.query(ONU).filter(ONU.id.in_(list(ids))).all()
+        return _standardized_onu_rows(session, onus)
+    except Exception as e:
+        logger.error(f"Error getting standardized ONUs by ids: {e}", exc_info=True)
+        return []
+
+
 def get_moved_onus(session, device_id=None):
     try:
         query = session.query(ONU).filter(
-(ONU.moved_to.isnot(None)) | (ONU.moved_from.isnot(None))
-)
+            (ONU.moved_to.isnot(None)) | (ONU.moved_from.isnot(None))
+        )
         if device_id:
             query = query.filter(ONU.device_id == device_id)
-        moved_onus = query.all()
-
-        results = []
-        for onu in moved_onus:
-            moved_to_device_id, moved_to_iface, moved_to_device_name = parse_moved_location(onu.moved_to)
-            moved_from_device_id, moved_from_iface, moved_from_device_name = parse_moved_location(onu.moved_from)
-            results.append({
-'device_id': onu.device_id, 'device': onu.device_name,
-'interface': onu.interface, 'mac': onu.mac,
-'description': onu.description if onu.description and onu.description != 'N/A' else 'N/A',
-'contract': onu.contract, 'status': onu.status,
-'optical_power': onu.optical_power,
-'moved_to': onu.moved_to,
-'moved_from': onu.moved_from,
-'moved_at': onu.moved_at.strftime('%Y-%m-%d %H:%M:%S') if onu.moved_at else None,
-'is_moved_to': onu.moved_to is not None,
-'is_moved_from': onu.moved_from is not None,
-'moved_to_device_id': moved_to_device_id,
-'moved_to_device_name': moved_to_device_name,
-'moved_to_interface': moved_to_iface,
-'moved_from_device_id': moved_from_device_id,
-'moved_from_device_name': moved_from_device_name,
-'moved_from_interface': moved_from_iface,
-'vendor': onu.vendor, 'model': onu.model,
-'is_mcd': is_mcd(onu.description),
-'last_seen': onu.last_seen.strftime('%Y-%m-%d %H:%M:%S') if onu.last_seen else None,
-})
+        moved_onus = query.order_by(ONU.device_name, ONU.interface).all()
+        # Единый стандарт: _onu_row_dict уже содержит все поля переезда
+        # (moved_to/from + device_id/name/interface, moved_at), договор и сигнал.
+        results = _standardized_onu_rows(session, moved_onus)
+        for r in results:
+            r['is_moved_to'] = r['moved_to'] is not None
+            r['is_moved_from'] = r['moved_from'] is not None
         return {'moved_onus': results, 'total_count': len(results)}
     except Exception as e:
         logger.error(f"Error getting move ONUs: {e}", exc_info=True)
@@ -2523,29 +2530,14 @@ def get_moved_onus(session, device_id=None):
 def get_mcd_onus(session, device_id=None):
     try:
         query = session.query(ONU).filter(
-ONU.description.isnot(None),
-ONU.description.like(mcd_like_pattern(), escape=LIKE_ESCAPE),
-(ONU.is_active.is_(True)) | (ONU.is_configured.is_(True))
-)
+            ONU.description.isnot(None),
+            ONU.description.like(mcd_like_pattern(), escape=LIKE_ESCAPE),
+            (ONU.is_active.is_(True)) | (ONU.is_configured.is_(True))
+        )
         if device_id:
             query = query.filter(ONU.device_id == device_id)
         mcd_onus = query.order_by(ONU.device_name, ONU.interface).all()
-
-        results = []
-        for onu in mcd_onus:
-            results.append({
-'device_id': onu.device_id, 'device': onu.device_name,
-'interface': onu.interface, 'mac': onu.mac,
-'description': onu.description if onu.description and onu.description != 'N/A' else 'N/A',
-'contract': onu.contract, 'status': onu.status,
-'dereg_reason': onu.dereg_reason,
-'optical_power': onu.optical_power,
-'optical_status': get_optical_status(onu.optical_power),
-'vendor': onu.vendor, 'model': onu.model,
-'client_macs_count': onu.client_macs_count,
-'is_active': onu.is_active, 'is_configured': onu.is_configured,
-'last_seen': onu.last_seen.strftime('%Y-%m-%d %H:%M:%S') if onu.last_seen else None,
-})
+        results = _standardized_onu_rows(session, mcd_onus)
         return {'mcd_onus': results, 'total_count': len(results)}
     except Exception as e:
         logger.error(f"Error getting MCD ONUs: {e}", exc_info=True)
@@ -2583,9 +2575,7 @@ ONU.description.like(mcd_like_pattern(), escape=LIKE_ESCAPE)
         onus = query.order_by(ONU.device_name, ONU.interface).limit(limit).all()
 
         # Единый стандарт строки ONU + договор из справочника (как в поиске):
-        cmap = get_contracts_map_for_onus(session, [(o.device_id, o.interface) for o in onus])
-        results = [_onu_row_dict(o, cmap) for o in onus]
-        enrich_rows_with_contract_details(session, results)
+        results = _standardized_onu_rows(session, onus)
 
         return {'onus': results, 'total_count': len(results), 'filter_type': filter_type}
     except Exception as e:
