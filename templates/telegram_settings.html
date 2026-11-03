@@ -1,0 +1,343 @@
+{% extends "base.html" %}
+{% block title %}Настройки Telegram{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitoring.css') }}">
+{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0"><i class="bi bi-telegram"></i> Настройки Telegram Bot</h4>
+    <div>
+        {% if role == 'admin' %}
+        <a href="{{ url_for('settings') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-gear"></i> Настройки системы</a>
+        {% endif %}
+        <a href="{{ url_for('index') }}" class="btn btn-secondary btn-sm"><i class="bi bi-arrow-left"></i> Назад к устройствам</a>
+    </div>
+</div>
+<div class="row">
+    <div class="col-md-8 offset-md-2">
+        <div class="card mb-3">
+            <div class="card-header bg-primary text-white py-2">
+                <h6 class="mb-0"><i class="bi bi-robot"></i> Параметры бота</h6>
+            </div>
+                <div class="card-body py-2">
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i>
+                        Telegram бот отправляет уведомления об изменениях статуса ONU:
+                        <ul class="mb-0">
+                            <li><i class="bi bi-record-circle text-danger"></i> Обрыв оптики (wire-down, LOSi)</li>
+                            <li><i class="bi bi-check-circle text-success"></i> Восстановление линии</li>
+                            <li><i class="bi bi-buildings"></i> <strong>МКД-ONU</strong> — дублирование в критический чат</li>
+                        </ul>
+                    </div>
+                    <div id="statusAlert" class="alert" style="display: none;"></div>
+                    <form id="telegramSettingsForm">
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <div>
+                                    <label for="botToken" class="form-label">Bot Token:</label>
+                                    <input type="password" class="form-control" id="botToken"
+                                           placeholder="Введите токен бота">
+                                    <small class="form-text text-muted">
+                                        Получить токен можно у @BotFather в Telegram
+                                    </small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div>
+                                    <label for="chatId" class="form-label">Основной Chat ID:</label>
+                                    <input type="text" class="form-control" id="chatId"
+                                           placeholder="ID основного чата или группы">
+                                    <small class="form-text text-muted">
+                                        ID группы, куда будут отправляться все уведомления
+                                    </small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card mb-3 border-warning">
+                            <div class="card-header bg-warning text-dark py-2">
+                                <h6 class="mb-0"><i class="bi bi-buildings"></i> Настройки МКД-уведомлений (критический чат)</h6>
+                            </div>
+                            <div class="card-body py-2">
+                                <div class="alert alert-warning small mb-3">
+                                    <i class="bi bi-buildings"></i>
+                                    <strong>МКД-ONU</strong> — это терминалы на многоквартирные дома
+                                    (описание начинается с символа <code>+</code>).
+                                    При обрыве на такой ONU уведомление дублируется в отдельный
+                                    <strong>критический чат</strong>, чтобы важные сообщения не потерялись.
+                                </div>
+                                <div class="row mb-3">
+                                    <div class="col-md-12">
+                                        <div>
+                                            <label for="criticalChatId" class="form-label"><i class="bi bi-exclamation-triangle text-danger"></i> Критический Chat ID (для МКД):</label>
+                                            <input type="text" class="form-control" id="criticalChatId"
+                                                   placeholder="ID чата для дублирования МКД-уведомлений">
+                                            <small class="form-text text-muted">
+                                                Оставьте пустым, чтобы не дублировать уведомления.
+                                                Обычно это чат с руководством или дежурным инженером.
+                                            </small>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input type="checkbox" class="form-check-input" id="notifyMcdSeparately">
+                                            <label class="form-check-label" for="notifyMcdSeparately">
+                                                <strong>Дублировать уведомления по МКД</strong> в критический чат
+                                            </label>
+                                            <small class="form-text text-muted d-block">
+                                                При обрыве МКД-ONU сообщение пойдёт в оба чата
+                                            </small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input type="checkbox" class="form-check-input" id="mcdAlwaysNotify">
+                                            <label class="form-check-label" for="mcdAlwaysNotify">
+                                                <strong>Всегда уведомлять по МКД</strong>
+                                            </label>
+                                            <small class="form-text text-muted d-block">
+                                                Даже если общие уведомления об обрывах выключены
+                                            </small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-12">
+                                <div class="card border-light bg-light">
+                                    <div class="card-body py-2">
+                                        <h6 class="mb-2"><i class="bi bi-sliders"></i> Параметры мониторинга</h6>
+                                        <div class="row g-3">
+                                            <div class="col-md-4">
+                                                <label for="checkInterval" class="form-label">Интервал проверки, сек:</label>
+                                                <input type="number" class="form-control" id="checkInterval" min="30" step="10" placeholder="300">
+                                                <small class="form-text text-muted">Не может быть меньше интервала фонового обновления устройств</small>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <label for="criticalStatuses" class="form-label">Критические статусы (через запятую):</label>
+                                                <input type="text" class="form-control" id="criticalStatuses" placeholder="down, lost, losi">
+                                            </div>
+                                            <div class="col-md-4">
+                                                <label for="recoveryStatuses" class="form-label">Статусы восстановления (через запятую):</label>
+                                                <input type="text" class="form-control" id="recoveryStatuses" placeholder="up, operational">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="enabled">
+                                    <label class="form-check-label" for="enabled">
+                                        Бот включен
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="monitoringEnabled">
+                                    <label class="form-check-label" for="monitoringEnabled">
+                                        Мониторинг включен
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="notifyOnOffline">
+                                    <label class="form-check-label" for="notifyOnOffline">
+                                        Уведомлять об обрывах
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="notifyOnRecovery">
+                                    <label class="form-check-label" for="notifyOnRecovery">
+                                        Уведомлять о восстановлении
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-12">
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="bi bi-save"></i> Сохранить настройки
+                                </button>
+                                <button type="button" id="testBotBtn" class="btn btn-success ms-2">
+                                    <i class="bi bi-send"></i> Тест бота
+                                </button>
+                                <button type="button" id="testMcdBtn" class="btn btn-warning ms-2">
+                                    <i class="bi bi-buildings"></i> Тест МКД
+                                </button>
+                                <button type="button" id="refreshStatusBtn" class="btn btn-info ms-2">
+                                    <i class="bi bi-arrow-repeat"></i> Обновить статус
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                    <hr>
+                    <div class="row mt-4">
+                        <div class="col-md-12">
+                            <h6 class="mb-2"><i class="bi bi-broadcast"></i> Статус бота:</h6>
+                            <div id="botStatus" class="alert alert-secondary">
+                                <i class="bi bi-arrow-repeat"></i> Загрузка...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+    </div>
+</div>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        loadTelegramSettings();
+        refreshBotStatus();
+        document.getElementById('telegramSettingsForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const parseCsv = (id) => document.getElementById(id).value
+                .split(',').map(s => s.trim()).filter(Boolean);
+            const settings = {
+                bot_token: document.getElementById('botToken').value,
+                chat_id: document.getElementById('chatId').value,
+                critical_chat_id: document.getElementById('criticalChatId').value,
+                enabled: document.getElementById('enabled').checked,
+                monitoring_enabled: document.getElementById('monitoringEnabled').checked,
+                notify_on_offline: document.getElementById('notifyOnOffline').checked,
+                notify_on_recovery: document.getElementById('notifyOnRecovery').checked,
+                notify_mcd_separately: document.getElementById('notifyMcdSeparately').checked,
+                mcd_always_notify: document.getElementById('mcdAlwaysNotify').checked,
+                check_interval: parseInt(document.getElementById('checkInterval').value, 10) || undefined,
+                critical_statuses: parseCsv('criticalStatuses'),
+                recovery_statuses: parseCsv('recoveryStatuses')
+            };
+            if (Number.isNaN(settings.check_interval)) delete settings.check_interval;
+            fetch('/api/telegram/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showAlert('success', 'Настройки сохранены успешно!');
+                        refreshBotStatus();
+                    } else {
+                        showAlert('danger', 'Ошибка сохранения: ' + (data.message || 'Неизвестная ошибка'));
+                    }
+                })
+                .catch(error => showAlert('danger', 'Ошибка сети: ' + error));
+        });
+        document.getElementById('testBotBtn').addEventListener('click', function() {
+            fetch('/api/telegram/test')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showAlert('success', data.message);
+                    } else {
+                        showAlert('danger', 'Ошибка теста: ' + (data.message || 'Неизвестная ошибка'));
+                    }
+                })
+                .catch(error => showAlert('danger', 'Ошибка сети: ' + error));
+        });
+        document.getElementById('testMcdBtn').addEventListener('click', function() {
+            if (!confirm('Отправить тестовое уведомление МКД-ONU? Оно придёт и в основной, и в критический чат.')) {
+                return;
+            }
+            showAlert('info', 'Отправка тестового МКД-уведомления...');
+            fetch('/api/telegram/test_notification?device_id=1&interface=EPON0/1:1&is_mcd=true')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showAlert('success', data.message);
+                    } else {
+                        showAlert('danger', 'Ошибка теста: ' + (data.message || 'Неизвестная ошибка'));
+                    }
+                })
+                .catch(error => showAlert('danger', 'Ошибка сети: ' + error));
+        });
+        document.getElementById('refreshStatusBtn').addEventListener('click', function() {
+            refreshBotStatus();
+        });
+        function loadTelegramSettings() {
+            fetch('/api/telegram/settings')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        const config = data.config;
+                        document.getElementById('botToken').value = config.bot_token || '';
+                        document.getElementById('chatId').value = config.chat_id || '';
+                        document.getElementById('criticalChatId').value = config.critical_chat_id || '';
+                        document.getElementById('enabled').checked = config.enabled || false;
+                        document.getElementById('monitoringEnabled').checked = config.monitoring_enabled || false;
+                        document.getElementById('notifyOnOffline').checked = config.notify_on_offline || false;
+                        document.getElementById('notifyOnRecovery').checked = config.notify_on_recovery || false;
+                        document.getElementById('notifyMcdSeparately').checked = config.notify_mcd_separately !== false;
+                        document.getElementById('mcdAlwaysNotify').checked = config.mcd_always_notify !== false;
+                        document.getElementById('checkInterval').value = config.check_interval || '';
+                        document.getElementById('criticalStatuses').value = (config.critical_statuses || []).join(', ');
+                        document.getElementById('recoveryStatuses').value = (config.recovery_statuses || []).join(', ');
+                    }
+                })
+                .catch(error => console.error('Ошибка загрузки настроек:', error));
+        }
+        function refreshBotStatus() {
+            const statusDiv = document.getElementById('botStatus');
+            statusDiv.innerHTML = '<i class="bi bi-arrow-repeat"></i> Загрузка...';
+            fetch('/api/telegram/status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        const bot = data.telegram_bot;
+                        const criticalChatInfo = bot.critical_chat_id
+                            ? `<code>${escapeHtml(bot.critical_chat_id)}</code> <span class="badge bg-success">Настроен</span>`
+                            : `<span class="text-muted">Не настроен</span> <span class="badge bg-secondary">МКД не дублируются</span>`;
+                        statusDiv.innerHTML = `
+                            <div class="d-flex justify-content-between flex-wrap">
+                                <div>
+                                    <strong>Состояние:</strong>
+                                    ${bot.running ? '<span class="badge bg-success">Работает</span>' : '<span class="badge bg-danger">Остановлен</span>'}
+                                </div>
+                                <div>
+                                    <strong>Инициализирован:</strong>
+                                    ${bot.bot_initialized ? '<span class="badge bg-success">Да</span>' : '<span class="badge bg-danger">Нет</span>'}
+                                </div>
+                            </div>
+                            <hr>
+                            <div>
+                                <strong><i class="bi bi-motherboard"></i> Отслеживаемых ONU:</strong> ${bot.tracking_onus || 0}<br>
+                                <strong><i class="bi bi-buildings"></i> Отслеживаемых МКД-ONU:</strong> <span class="badge bg-warning text-dark">${bot.mcd_tracking || 0}</span><br>
+                                <strong>Последняя проверка:</strong> ${escapeHtml(bot.last_check_time) || 'Нет данных'}<br>
+                                <strong>Активных уведомлений:</strong> ${bot.active_notifications || 0}<br>
+                                <strong>Интервал проверки:</strong> ${bot.check_interval || 0} сек<br>
+                                <strong>Критические статусы:</strong> ${escapeHtml((bot.critical_statuses || []).join(', ')) || 'Не указаны'}
+                            </div>
+                            <hr>
+                            <div>
+                                <strong><i class="bi bi-exclamation-triangle text-danger"></i> Критический чат (МКД):</strong> ${criticalChatInfo}<br>
+                                <strong><i class="bi bi-buildings"></i> Дублирование МКД:</strong>
+                                ${bot.notify_mcd_separately
+                            ? '<span class="badge bg-success">ВКЛ</span>'
+                            : '<span class="badge bg-secondary">ВЫКЛ</span>'}<br>
+                                <strong><i class="bi bi-buildings"></i> Всегда уведомлять по МКД:</strong>
+                                ${bot.mcd_always_notify
+                            ? '<span class="badge bg-success">ВКЛ</span>'
+                            : '<span class="badge bg-secondary">ВЫКЛ</span>'}
+                            </div>
+                        `;
+                    }
+                })
+                .catch(error => {
+                    statusDiv.innerHTML = '<span class="text-danger">Ошибка загрузки статуса</span>';
+                    console.error('Ошибка загрузки статуса:', error);
+                });
+        }
+        function showAlert(type, message) {
+            const alert = document.getElementById('statusAlert');
+            alert.className = 'alert alert-' + type;
+            alert.innerHTML = `<i class="bi bi-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i> ${escapeHtml(message)}`;
+            alert.style.display = 'block';
+            setTimeout(() => { alert.style.display = 'none'; }, 5000);
+        }
+    });
+</script>
+{% endblock %}

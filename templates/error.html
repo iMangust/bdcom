@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Ошибка{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card border-danger">
+            <div class="card-header bg-danger text-white">
+                <h4 class="mb-0">
+                    <i class="bi bi-exclamation-triangle"></i> Ошибка
+                </h4>
+            </div>
+            <div class="card-body text-center py-5">
+                <div class="mb-4">
+                    <i class="bi bi-x-circle display-1 text-danger"></i>
+                </div>
+                <h3 class="text-danger mb-3">{{ message }}</h3>
+                <p class="text-muted mb-4">
+                    Произошла ошибка при обработке вашего запроса.
+                    Пожалуйста, попробуйте еще раз или обратитесь к администратору.
+                </p>
+                <div class="d-flex justify-content-center gap-3">
+                    <a href="{{ url_for('index') }}" class="btn btn-primary">
+                        <i class="bi bi-house"></i> На главную
+                    </a>
+                    <button onclick="window.history.back()" class="btn btn-secondary">
+                        <i class="bi bi-arrow-left"></i> Назад
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,1153 @@
+{% extends "base.html" %}
+{% block title %}{{ onu.interface }} - Детализация{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitoring.css') }}">
+{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4>
+        <i class="bi bi-motherboard"></i> Терминал: {{ onu.interface }}
+        {% if onu.is_mcd %}
+        <span class="badge bg-warning text-dark fs-6 ms-2">🏢 МКД</span>
+        {% endif %}
+    </h4>
+    <div>
+        <a href="{{ url_for('device_detail', device_id=device_id) }}" class="btn btn-secondary btn-sm">
+            <i class="bi bi-arrow-left"></i> Назад к узлу
+        </a>
+        <button onclick="refreshThisONU()" class="btn btn-outline-primary btn-sm">
+            <i class="bi bi-arrow-repeat"></i> Сканировать терминал
+        </button>
+    </div>
+</div>
+
+<p class="text-muted small mb-3">
+    <i class="bi bi-cpu"></i> Узел сети: {{ device_name }} |
+    <i class="bi bi-clock"></i> Сканировано: {{ timestamp }}
+</p>
+
+{% if onu.is_mcd %}
+<div class="alert alert-warning alert-permanent mb-3 border-warning border-2">
+    <div class="d-flex align-items-center">
+        <i class="bi bi-buildings display-4 me-3 text-warning"></i>
+        <div>
+            <h5 class="alert-heading mb-1">
+                <i class="bi bi-exclamation-triangle"></i> 🏢 МКД-ONU (Многоквартирный дом)
+            </h5>
+            <p class="mb-1">
+                <strong>Этот терминал обслуживает многоквартирный дом.</strong>
+                За ним нужно следить особенно внимательно — за ним может быть множество клиентов.
+            </p>
+            <p class="mb-0 small">
+                <i class="bi bi-info-circle"></i>
+                При обрыве на этой ONU уведомление дублируется в критический чат Telegram.
+            </p>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if onu.is_moved_to %}
+{% set target_name = onu.moved_to_device_name or onu.moved_to %}
+{% set target_device_id = onu.moved_to_device_id or '' %}
+{% set target_iface = onu.moved_to_interface or '' %}
+<div class="alert alert-warning alert-permanent mb-3 border-warning border-2">
+    <div class="d-flex align-items-center">
+        <i class="bi bi-arrow-right fs-1 me-3 text-warning"></i>
+        <div>
+            <h5 class="alert-heading mb-1">
+                <i class="bi bi-exclamation-triangle"></i> 🟡 ONU УЕХАЛА с этого ОЛТ
+            </h5>
+            <p class="mb-1">
+                Эта ONU физически переехала на другой ОЛТ:
+                {% if target_device_id %}
+                <strong><a href="{{ url_for('device_detail', device_id=target_device_id) }}" class="text-warning text-decoration-underline"><code>{{ target_name }}:{{ target_iface }}</code></a></strong>
+                {% else %}
+                <strong><code>{{ target_name }}:{{ target_iface }}</code></strong>
+                {% endif %}
+            </p>
+            {% if onu.moved_at %}
+            <p class="mb-1"><strong>Время переезда:</strong> {{ onu.moved_at }}</p>
+            {% endif %}
+            <p class="mb-0 small text-muted">
+                <i class="bi bi-info-circle"></i>
+                ONU всё ещё прописана в конфигурации этого OLT. Вы можете удалить её,
+                чтобы она больше не отображалась в списке.
+                {% if target_device_id %}
+                <a href="{{ url_for('device_detail', device_id=target_device_id) }}" class="text-decoration-none ms-2">
+                    <i class="bi bi-box-arrow-up-right"></i> Перейти на новый ОЛТ →
+                </a>
+                {% endif %}
+            </p>
+        </div>
+    </div>
+</div>
+{% elif onu.is_moved_from %}
+{% set source_name = onu.moved_from_device_name or onu.moved_from %}
+{% set source_device_id = onu.moved_from_device_id or '' %}
+{% set source_iface = onu.moved_from_interface or '' %}
+<div class="alert alert-info alert-permanent mb-3 border-info border-2">
+    <div class="d-flex align-items-center">
+        <i class="bi bi-arrow-left fs-1 me-3 text-info"></i>
+        <div>
+            <h5 class="alert-heading mb-1">
+                <i class="bi bi-info-circle"></i> 🔵 ONU ПРИЕХАЛА на этот ОЛТ
+            </h5>
+            <p class="mb-1">
+                Эта ONU ранее была прописана на другом ОЛТ:
+                {% if source_device_id %}
+                <strong><a href="{{ url_for('device_detail', device_id=source_device_id) }}" class="text-info text-decoration-underline"><code>{{ source_name }}:{{ source_iface }}</code></a></strong>
+                {% else %}
+                <strong><code>{{ source_name }}:{{ source_iface }}</code></strong>
+                {% endif %}
+            </p>
+            {% if onu.moved_at %}
+            <p class="mb-1"><strong>Время переезда:</strong> {{ onu.moved_at }}</p>
+            {% endif %}
+            <p class="mb-0 small text-muted">
+                <i class="bi bi-check-circle"></i>
+                ONU успешно работает на новом месте. Никаких действий не требуется.
+                {% if source_device_id %}
+                <a href="{{ url_for('device_detail', device_id=source_device_id) }}" class="text-decoration-none ms-2">
+                    <i class="bi bi-box-arrow-up-right"></i> Перейти на старый ОЛТ →
+                </a>
+                {% endif %}
+            </p>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{% if onu.is_configured and onu.optical_power is none and not onu.is_moved_to and not onu.is_moved_from %}
+<div class="alert alert-secondary alert-permanent mb-3">
+    <div class="d-flex align-items-center">
+        <i class="bi bi-pencil-square fs-4 me-3"></i>
+        <div>
+            <h6 class="alert-heading mb-1"><i class="bi bi-info-circle"></i> ONU прописана на OLT, но не активна</h6>
+            <p class="mb-0">Терминал присутствует в конфигурации OLT, но не отвечает. Проверьте оптический сигнал и питание.</p>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="row">
+    <div class="col-md-6 mb-3">
+        <div class="card h-100 {% if onu.is_mcd %}border-warning border-2{% elif onu.is_moved_to %}border-warning border-2{% elif onu.is_moved_from %}border-info border-2{% endif %}">
+            <div class="card-header {% if onu.is_mcd %}bg-warning text-dark{% elif onu.is_moved_to %}bg-warning text-dark{% elif onu.is_moved_from %}bg-info text-white{% else %}bg-primary text-white{% endif %} py-2">
+                <h6 class="mb-0">
+                    <i class="bi bi-info-square"></i> Спецификация терминала
+                    {% if onu.is_mcd %}<span class="badge bg-dark ms-2">🏢 МКД</span>{% endif %}
+                    {% if onu.is_moved_to %}<span class="badge bg-dark ms-2">🟡 УЕХАЛА</span>{% endif %}
+                    {% if onu.is_moved_from %}<span class="badge bg-dark ms-2">🔵 ПРИЕХАЛА</span>{% endif %}
+                </h6>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <tbody>
+                            <tr>
+                                <th class="bg-light" style="width: 40%">Порт:</th>
+                                <td><strong>{{ onu.interface }}</strong></td>
+                            </tr>
+                            <tr>
+                                <th class="bg-light">Производитель:</th>
+                                <td>{{ onu.vendor }}</td>
+                            </tr>
+                            <tr>
+                                <th class="bg-light">Модель:</th>
+                                <td>{{ onu.model }}</td>
+                            </tr>
+                            <tr>
+                                <th class="bg-light">MAC терминала:</th>
+                                <td><code class="text-dark">{{ onu.mac }}</code></td>
+                            </tr>
+                            <tr>
+                                <th class="bg-light">Описание:</th>
+                                <td>
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <span id="description-text">
+                                            {% if onu.is_mcd %}<strong class="text-warning">{% endif %}
+                                            {{ onu.description if onu.description != onu.interface else 'N/A' }}
+                                            {% if onu.is_mcd %}</strong>{% endif %}
+                                        </span>
+                                        {% if role == 'admin' or role == 'support' %}
+                                        <button class="btn btn-sm btn-outline-secondary ms-2" onclick="editDescription()">
+                                            <i class="bi bi-pencil"></i>
+                                        </button>
+                                        {% endif %}
+                                    </div>
+                                    {% if role == 'admin' or role == 'support' %}
+                                    <div id="description-edit" style="display: none;" class="mt-2">
+                                        <div class="input-group input-group-sm">
+                                            <input type="text" class="form-control" id="description-input"
+                                                   value="{{ onu.description if onu.description != onu.interface else '' }}"
+                                                   maxlength="100"
+                                                   placeholder="Для МКД начните описание с '+'">
+                                            <button class="btn btn-success" onclick="saveDescription()">
+                                                <i class="bi bi-check"></i>
+                                            </button>
+                                            <button class="btn btn-secondary" onclick="cancelEdit()">
+                                                <i class="bi bi-x"></i>
+                                            </button>
+                                        </div>
+                                        <small class="text-muted">
+                                            Макс. 100 символов.
+                                            {% if onu.is_mcd %}
+                                            <span class="text-warning">💡 Описание начинается с '+' — это МКД-ONU</span>
+                                            {% else %}
+                                            💡 Чтобы сделать ONU МКД, начните описание с символа <code>+</code>
+                                            {% endif %}
+                                        </small>
+                                    </div>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="bg-light">Тип ONU:</th>
+                                <td>
+                                    {% if onu.is_mcd %}
+                                    <span class="badge bg-warning text-dark"><i class="bi bi-buildings"></i> МКД (Многоквартирный дом)</span>
+                                    {% elif onu.is_moved_to %}
+                                    <span class="badge bg-warning text-dark"><i class="bi bi-arrow-right"></i> Уехала на другой ОЛТ</span>
+                                    {% elif onu.is_moved_from %}
+                                    <span class="badge bg-info"><i class="bi bi-arrow-left"></i> Приехала с другого ОЛТ</span>
+                                    {% elif onu.optical_power is not none %}
+                                    <span class="badge bg-success"><i class="bi bi-check-circle"></i> Активная</span>
+                                    {% elif onu.is_configured %}
+                                    <span class="badge bg-secondary"><i class="bi bi-pencil-square"></i> Прописана, не активна</span>
+                                    {% else %}
+                                    <span class="badge bg-danger"><i class="bi bi-x-circle"></i> Неактивна</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% if onu.is_moved_to %}
+                            <tr>
+                                <th class="bg-light">Переехала на:</th>
+                                <td>
+                                    {% if onu.moved_to_device_id %}
+                                    <a href="{{ url_for('device_detail', device_id=onu.moved_to_device_id) }}"
+                                       class="text-decoration-none text-warning"
+                                       title="Перейти на устройство {{ onu.moved_to_device_name }}">
+                                        <code class="text-warning">{{ onu.moved_to_device_name }}:{{ onu.moved_to_interface }}</code>
+                                        <i class="bi bi-box-arrow-up-right small"></i>
+                                    </a>
+                                    {% else %}
+                                    <code class="text-warning">{{ onu.moved_to_device_name or onu.moved_to }}:{{ onu.moved_to_interface }}</code>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endif %}
+                            {% if onu.is_moved_from %}
+                            <tr>
+                                <th class="bg-light">Предыдущее расположение:</th>
+                                <td>
+                                    {% if onu.moved_from_device_id %}
+                                    <a href="{{ url_for('device_detail', device_id=onu.moved_from_device_id) }}"
+                                       class="text-decoration-none text-info"
+                                       title="Перейти на устройство {{ onu.moved_from_device_name }}">
+                                        <code class="text-info">{{ onu.moved_from_device_name }}:{{ onu.moved_from_interface }}</code>
+                                        <i class="bi bi-box-arrow-up-right small"></i>
+                                    </a>
+                                    {% else %}
+                                    <code class="text-info">{{ onu.moved_from_device_name or onu.moved_from }}:{{ onu.moved_from_interface }}</code>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endif %}
+                            <tr>
+                                <th class="bg-light">Последняя активность:</th>
+                                <td>
+                                    {% if onu.last_seen %}
+                                    <span class="{% if onu.optical_power is none %}text-danger{% else %}text-muted{% endif %}">
+                                        <i class="bi bi-clock-history"></i> {{ onu.last_seen }}
+                                    </span>
+                                    {% if onu.optical_power is none %}
+                                    <small class="text-danger ms-2">(не на связи)</small>
+                                    {% endif %}
+                                    {% else %}
+                                    <span class="text-muted">Нет данных</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="bg-light">Основной договор:</th>
+                                <td>
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <span class="badge bg-success" id="main-contract-text">
+                                            {% if onu.contract %}{{ onu.contract }}{% else %}N/A{% endif %}
+                                        </span>
+                                        <button class="btn btn-sm btn-outline-info ms-2" onclick="loadAllContracts()"
+                                                title="Показать все договоры">
+                                            <i class="bi bi-list"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% if role == 'admin' %}
+                            <tr>
+                                <th class="bg-light">Установить договор:</th>
+                                <td>
+                                    <div class="input-group input-group-sm">
+                                        <input type="text" class="form-control" id="manual-contract-input"
+                                               placeholder="Номер договора">
+                                        <button class="btn btn-warning" onclick="setManualContract()">
+                                            <i class="bi bi-link"></i> Привязать
+                                        </button>
+                                    </div>
+                                    <small class="text-muted">Вручную привязать договор к ONU</small>
+                                </td>
+                            </tr>
+                            {% endif %}
+                            <tr>
+                                <th class="bg-light">Тип привязки:</th>
+                                <td>{{ onu.bind_type }}</td>
+                            </tr>
+                            <tr>
+                                <th class="bg-light">Статус:</th>
+                                <td>
+                                    <span class="badge {% if onu.optical_power is not none %}bg-success{% elif onu.is_moved_to %}bg-warning text-dark{% elif onu.is_moved_from %}bg-info{% else %}bg-danger{% endif %}">
+                                        {{ onu.status }}
+                                    </span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="bg-light">Причина отключения:</th>
+                                <td>
+                                    <span class="badge bg-secondary">{{ onu.dereg_reason }}</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="bg-light">Уровень сигнала:</th>
+                                <td>
+                                    {% if onu.optical_power is not none %}
+                                    <span class="badge
+                                        {% if onu.optical_power > -25 %}bg-success
+                                        {% elif onu.optical_power >= -27 %}bg-warning text-dark
+                                        {% else %}bg-danger{% endif %}">
+                                        {{ "%.2f"|format(onu.optical_power) }} dBm
+                                    </span>
+                                    {% else %}
+                                    <span class="badge bg-secondary">N/A</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            <tr>
+                                <th class="bg-light">Статус конфигурации:</th>
+                                <td>
+                                    {% if onu.is_configured %}
+                                    <span class="badge bg-success">Прописана на OLT</span>
+                                    {% else %}
+                                    <span class="badge bg-secondary">Удалена с OLT</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6 mb-3">
+        <div class="card h-100">
+            <div class="card-header bg-info text-white py-2">
+                <h6 class="mb-0">
+                    <i class="bi bi-diagram-3"></i> Клиентские подключения
+                    <span class="badge bg-light text-dark">{{ onu.client_macs|length }}</span>
+                    {% if onu.is_mcd %}
+                    <span class="badge bg-warning text-dark ms-2">🏢 МКД</span>
+                    {% endif %}
+                </h6>
+            </div>
+            <div class="card-body p-0">
+                {% if onu.client_macs %}
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>VLAN</th>
+                                <th>MAC адрес</th>
+                                <th>Тип</th>
+                                <th>Порт</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for mac in onu.client_macs %}
+                            <tr>
+                                <td><span class="badge bg-secondary">{{ mac.vlan }}</span></td>
+                                <td><code class="text-dark">{{ mac.mac_address }}</code></td>
+                                <td><span class="badge bg-info">{{ mac.type }}</span></td>
+                                <td><small>{{ mac.port }}</small></td>
+                                <td>
+                                    <button class="btn btn-sm btn-outline-primary"
+                                            onclick="searchContractByMAC('{{ mac.mac_address | jsattr }}')"
+                                            title="Поиск договора по MAC">
+                                        <i class="bi bi-search"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center py-4">
+                    <i class="bi bi-wifi-off display-4 text-muted"></i>
+                    <p class="text-muted mt-2 mb-0">Клиентские подключения не обнаружены</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4" id="all-contracts-section" style="display: none;">
+    <div class="card-header bg-success text-white py-2">
+        <h6 class="mb-0">
+            <i class="bi bi-file-earmark-text"></i> Все договоры терминала
+            <span class="badge bg-light text-success ms-2" id="contracts-count">0</span>
+        </h6>
+    </div>
+    <div class="card-body p-0">
+        <div id="contracts-loading" class="text-center py-4">
+            <div class="spinner-border text-success" role="status">
+                <span class="visually-hidden">Загрузка...</span>
+            </div>
+            <p class="mt-2 text-muted">Загрузка договоров...</p>
+        </div>
+        <div id="contracts-content" class="p-3" style="display: none;"></div>
+    </div>
+</div>
+
+{% if role == 'admin' and onu.is_moved_to %}
+{% set target_name = onu.moved_to_device_name or onu.moved_to %}
+{% set target_device_id = onu.moved_to_device_id or '' %}
+<div class="card border-warning mb-4">
+    <div class="card-header bg-warning text-dark">
+        <h6 class="mb-0"><i class="bi bi-truck"></i> Очистка уехавшей ONU со старого OLT</h6>
+    </div>
+    <div class="card-body">
+        <p class="small mb-2">
+            Эта ONU переехала на другое устройство
+            {% if target_device_id %}
+            <strong><a href="{{ url_for('device_detail', device_id=target_device_id) }}" class="text-decoration-none"><code>{{ target_name }}</code></a></strong>.
+            {% else %}
+            <strong><code>{{ target_name }}</code></strong>.
+            {% endif %}
+            Она всё ещё прописана на этом OLT и отображается в списке.
+            Вы можете удалить её с этого OLT, чтобы она больше не отображалась.
+        </p>
+        <div class="alert alert-warning alert-permanent small mb-3">
+            <i class="bi bi-exclamation-triangle"></i>
+            <strong>Внимание!</strong> Убедитесь, что ONU действительно работает на новом месте,
+            прежде чем удалять её с этого OLT.
+        </div>
+        <button class="btn btn-warning" onclick="cleanupMovedONU()">
+            <i class="bi bi-trash"></i> Удалить со старого OLT
+        </button>
+    </div>
+</div>
+{% endif %}
+
+{% if role == 'admin' and not onu.is_configured and not onu.is_moved_to and not onu.is_moved_from %}
+<div class="card border-secondary mb-4">
+    <div class="card-header bg-secondary text-white">
+        <h6 class="mb-0"><i class="bi bi-database"></i> Удаление непрописанной ONU</h6>
+    </div>
+    <div class="card-body">
+        <p class="small mb-2">
+            Эта ONU больше не прописана на OLT. Вы можете полностью удалить её из базы данных.
+        </p>
+        <button class="btn btn-secondary" onclick="deleteUnconfiguredONU()">
+            <i class="bi bi-trash"></i> Удалить из базы
+        </button>
+    </div>
+</div>
+{% endif %}
+
+{% if role == 'admin' and onu.is_configured and not onu.is_moved_to %}
+<div class="card border-danger mt-4">
+    <div class="card-header bg-danger text-white py-2">
+        <h6 class="mb-0"><i class="bi bi-exclamation-octagon"></i> Критические операции</h6>
+    </div>
+    <div class="card-body">
+        <div class="alert alert-warning alert-permanent py-2 mb-3">
+            <i class="bi bi-shield-exclamation"></i>
+            <strong>Внимание!</strong> Данные операции влияют на работу сети. Убедитесь в необходимости выполнения.
+            {% if onu.is_mcd %}
+            <br><strong class="text-danger">⚠️ Это МКД-ONU! Отключение повлияет на множество клиентов!</strong>
+            {% endif %}
+        </div>
+        <div class="d-flex gap-2">
+            <button onclick="deleteThisONU()" class="btn btn-outline-danger btn-sm"
+                    title="Деактивировать терминал в системе">
+                <i class="bi bi-trash"></i> Деактивировать терминал
+            </button>
+            <button onclick="showDeleteHelp()" class="btn btn-outline-secondary btn-sm"
+                    title="Информация о процессе деактивации">
+                <i class="bi bi-question-circle"></i> Справка
+            </button>
+        </div>
+        <div id="delete-help" class="mt-3 small text-muted" style="display: none;">
+            <p><strong>Процесс деактивации терминала:</strong></p>
+            <ul class="mb-2">
+                <li>Терминал будет отвязан от порта коммутатора</li>
+                <li>Все данные терминала будут удалены из системы</li>
+                <li>Операция требует подтверждения администратора</li>
+                <li>После деактивации потребуется переподключение для регистрации</li>
+            </ul>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<div class="modal fade" id="searchContractModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title">
+                    <i class="bi bi-search"></i> Поиск договора по MAC
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="contract-search-results"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Закрыть</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="deleteConfirmModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title">
+                    <i class="bi bi-exclamation-octagon"></i> Подтверждение деактивации
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-danger">
+                    <h6><i class="bi bi-x-circle"></i> КРИТИЧЕСКАЯ ОПЕРАЦИЯ!</h6>
+                    <p class="mb-2">Вы собираетесь деактивировать терминал <strong>{{ onu.interface }}</strong>.</p>
+                    {% if onu.is_mcd %}
+                    <p class="mb-0"><strong class="text-warning">🏢 ВНИМАНИЕ: Это МКД-ONU! Будут отключены все клиенты дома!</strong></p>
+                    {% endif %}
+                </div>
+                <p><strong>Последствия деактивации:</strong></p>
+                <ul class="small">
+                    <li>Терминал будет отвязан от порта коммутатора</li>
+                    <li>Все данные будут удалены из системы мониторинга</li>
+                    <li>Для повторного подключения потребуется физическая перерегистрация</li>
+                    <li>Операция необратима</li>
+                </ul>
+                <div class="mb-3">
+                    <label for="confirmText" class="form-label small">
+                        Для подтверждения введите текст: <code>ДЕАКТИВИРОВАТЬ {{ onu.interface }}</code>
+                    </label>
+                    <input type="text" class="form-control form-control-sm" id="confirmText"
+                           placeholder="Введите текст для подтверждения">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle"></i> Отмена
+                </button>
+                <button type="button" class="btn btn-danger btn-sm" id="confirmDeleteBtn" disabled>
+                    <i class="bi bi-trash"></i> Деактивировать
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const OPERATION_STEPS = {
+    update_description: {
+        title: 'Изменение описания ONU',
+        type: 'info',
+        icon: 'bi-pencil-square',
+        steps: [
+            'Проверка параметров',
+            'Подключение к OLT по SSH',
+            'Вход в режим конфигурации',
+            'Открытие интерфейса',
+            'Применение нового описания',
+            'Сохранение конфигурации (write)',
+            'Обновление в базе данных',
+            'Завершение операции'
+        ]
+    },
+    delete_onu: {
+        title: 'Деактивация терминала',
+        type: 'danger',
+        icon: 'bi-trash',
+        steps: [
+            'Проверка параметров',
+            'Подключение к OLT по SSH',
+            'Вход в режим конфигурации',
+            'Определение параметров ONU',
+            'Выполнение команды удаления',
+            'Сохранение конфигурации (write)',
+            'Удаление из базы данных',
+            'Завершение операции'
+        ]
+    },
+    delete_unconfigured: {
+        title: 'Удаление из базы данных',
+        type: 'warning',
+        icon: 'bi-database-x',
+        steps: [
+            'Проверка параметров',
+            'Удаление клиентских MAC-адресов',
+            'Удаление привязанных договоров',
+            'Удаление записи ONU из БД',
+            'Завершение операции'
+        ]
+    },
+    cleanup_moved: {
+        title: 'Удаление со старого OLT',
+        type: 'warning',
+        icon: 'bi-truck',
+        steps: [
+            'Проверка параметров',
+            'Подключение к старому OLT по SSH',
+            'Вход в режим конфигурации',
+            'Выполнение команды удаления ONU',
+            'Сохранение конфигурации (write)',
+            'Очистка статусов переезда в БД',
+            'Удаление связанных записей',
+            'Завершение операции'
+        ]
+    }
+};
+
+function runWithProgress(operationType, fetchPromise, options = {}) {
+    const config = OPERATION_STEPS[operationType];
+    if (!config) {
+        console.error('Unknown operation type:', operationType);
+        return fetchPromise;
+    }
+
+    const progressEl = document.createElement('div');
+    progressEl.className = 'operation-progress';
+    progressEl.innerHTML = `
+        <div class="op-header ${config.type}">
+            <i class="bi ${config.icon}"></i>
+            <span class="op-title">${config.title}</span>
+        </div>
+        <div class="op-body">
+            <div class="op-progress-bar">
+                <div class="op-progress-fill"></div>
+            </div>
+            <ul class="op-steps">
+                ${config.steps.map((step, i) => `
+                    <li data-step="${i}">
+                        <span class="step-icon"><i class="bi bi-hourglass"></i></span>
+                        <span class="step-text">${step}</span>
+                    </li>
+                `).join('')}
+            </ul>
+        </div>
+    `;
+    document.body.appendChild(progressEl);
+
+    const progressFill = progressEl.querySelector('.op-progress-fill');
+    const stepItems = progressEl.querySelectorAll('.op-steps li');
+    const headerEl = progressEl.querySelector('.op-header');
+    const titleEl = progressEl.querySelector('.op-title');
+    const totalSteps = config.steps.length;
+    let currentStep = 0;
+    let finished = false;
+
+    function advanceStep() {
+        if (finished || currentStep >= totalSteps) return;
+        if (currentStep > 0) {
+            const prev = stepItems[currentStep - 1];
+            prev.classList.remove('active');
+            prev.classList.add('done');
+            prev.querySelector('.step-icon').innerHTML = '<i class="bi bi-check-circle-fill"></i>';
+        }
+        if (currentStep < totalSteps) {
+            const curr = stepItems[currentStep];
+            curr.classList.add('active');
+            curr.querySelector('.step-icon').innerHTML = '<span class="op-spinner"></span>';
+        }
+        const percent = Math.min(((currentStep + 1) / totalSteps) * 100, 95);
+        progressFill.style.width = percent + '%';
+        currentStep++;
+    }
+
+    function markAllDone() {
+        finished = true;
+        clearInterval(advanceInterval);
+        stepItems.forEach((li, i) => {
+            li.classList.remove('active');
+            li.classList.add('done');
+            li.querySelector('.step-icon').innerHTML = '<i class="bi bi-check-circle-fill"></i>';
+        });
+        progressFill.style.width = '100%';
+        headerEl.className = 'op-header success';
+        titleEl.textContent = config.title + ' — выполнено';
+    }
+
+    function markError(errorText) {
+        finished = true;
+        clearInterval(advanceInterval);
+        for (let i = 0; i < currentStep - 1; i++) {
+            stepItems[i].classList.add('done');
+            stepItems[i].querySelector('.step-icon').innerHTML = '<i class="bi bi-check-circle-fill"></i>';
+        }
+        const errorIdx = Math.min(currentStep > 0 ? currentStep - 1 : 0, totalSteps - 1);
+        stepItems.forEach((li, i) => li.classList.remove('active'));
+        stepItems[errorIdx].classList.add('error');
+        stepItems[errorIdx].querySelector('.step-icon').innerHTML = '<i class="bi bi-x-circle-fill"></i>';
+        stepItems[errorIdx].querySelector('.step-text').textContent =
+            config.steps[errorIdx] + ' — ' + (errorText || 'ошибка');
+        headerEl.className = 'op-header danger';
+        titleEl.textContent = config.title + ' — ошибка';
+    }
+
+    advanceStep();
+    const advanceInterval = setInterval(() => {
+        if (currentStep < totalSteps - 1) {
+            advanceStep();
+        }
+    }, 700);
+
+    return fetchPromise
+        .then(async response => {
+            const data = await response.json();
+            if (data.status === 'success') {
+                markAllDone();
+                if (options.onSuccess) options.onSuccess(data);
+                const delay = options.successDelay || 1500;
+                if (options.redirectUrl) {
+                    setTimeout(() => { window.location.href = options.redirectUrl; }, delay);
+                } else if (options.reload) {
+                    setTimeout(() => { window.location.reload(); }, delay);
+                } else {
+                    setTimeout(() => {
+                        if (progressEl.parentNode) progressEl.remove();
+                    }, delay + 500);
+                }
+            } else {
+                markError(data.message || 'Неизвестная ошибка');
+                if (options.onError) options.onError(data);
+                setTimeout(() => {
+                    if (progressEl.parentNode) progressEl.remove();
+                }, 4000);
+            }
+            return data;
+        })
+        .catch(error => {
+            markError('Ошибка сети: ' + error.message);
+            if (options.onError) options.onError({ message: error.message });
+            setTimeout(() => {
+                if (progressEl.parentNode) progressEl.remove();
+            }, 4000);
+            throw error;
+        });
+}
+// | tojson безопасно сериализует значения в JS-литералы (защита от JS-инъекций)
+const CURRENT_DEVICE_ID = {{ device_id | tojson }};
+const CURRENT_INTERFACE = {{ onu.interface | tojson }};
+
+function setManualContract() {
+    const contractNumber = document.getElementById('manual-contract-input').value.trim();
+    if (!contractNumber) {
+        showNotification('Введите номер договора', 'warning');
+        return;
+    }
+    if (confirm(`Привязать договор ${contractNumber} к этой ONU?`)) {
+        showNotification('Привязка договора...', 'info');
+        fetch('/api/set_onu_contract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                device: CURRENT_DEVICE_ID,
+                interface: CURRENT_INTERFACE,
+                contract_number: contractNumber
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                showNotification(data.message, 'success');
+                document.getElementById('main-contract-text').textContent = contractNumber;
+                document.getElementById('manual-contract-input').value = '';
+                setTimeout(() => { window.location.reload(); }, 1000);
+            } else {
+                showNotification('Ошибка: ' + data.message, 'danger');
+            }
+        })
+        .catch(error => { showNotification('Ошибка сети: ' + error, 'danger'); });
+    }
+}
+
+function loadAllContracts() {
+    const section = document.getElementById('all-contracts-section');
+    const loading = document.getElementById('contracts-loading');
+    const content = document.getElementById('contracts-content');
+    section.style.display = 'block';
+    loading.style.display = 'block';
+    content.style.display = 'none';
+    fetch(`/api/onu_contracts?device=${encodeURIComponent(CURRENT_DEVICE_ID)}&interface=${encodeURIComponent(CURRENT_INTERFACE)}`)
+        .then(response => response.json())
+        .then(data => {
+            loading.style.display = 'none';
+            if (data.status === 'success' && data.contracts.length > 0) {
+                document.getElementById('contracts-count').textContent = data.contracts.length;
+                let html = `
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i> Найдено ${data.contracts.length} договоров для этого терминала
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover">
+                            <thead class="table-light">
+                                <tr><th>Договор</th><th>MAC</th><th>Логин</th><th>IP</th><th>Загружен</th><th>Статус</th><th>Действия</th></tr>
+                            </thead>
+                            <tbody>`;
+                data.contracts.forEach(contract => {
+                    const isMain = contract.is_main;
+                    const statusBadge = isMain ?
+                        '<span class="badge bg-success">Основной</span>' :
+                        '<span class="badge bg-secondary">Дополнительный</span>';
+                    html += `
+                        <tr class="${isMain ? 'table-success' : ''}">
+                            <td><strong>${escapeHtml(contract.contract_number)}</strong>${isMain ? '<i class="bi bi-star-fill text-warning ms-1"></i>' : ''}</td>
+                            <td><code class="text-primary">${escapeHtml(contract.mac_address || 'N/A')}</code></td>
+                            <td>${escapeHtml(contract.login || 'N/A')}</td>
+                            <td>${escapeHtml(contract.ip_address || 'N/A')}</td>
+                            <td><small class="text-muted">${escapeHtml(contract.uploaded_at || 'N/A')}</small></td>
+                            <td>${statusBadge}</td>
+                            <td>
+                                <div class="btn-group btn-group-sm">
+                                    <button class="btn btn-outline-primary" onclick="searchContract('${jsAttr(contract.contract_number)}')" title="Поиск договора"><i class="bi bi-search"></i></button>
+                                    ${!isMain ? `<button class="btn btn-outline-success" onclick="setAsMainContract('${jsAttr(contract.contract_number)}')" title="Сделать основным"><i class="bi bi-star"></i></button>` : ''}
+                                </div>
+                            </td>
+                        </tr>`;
+                });
+                html += `</tbody></table></div>`;
+                content.innerHTML = html;
+                content.style.display = 'block';
+            } else {
+                content.innerHTML = `<div class="alert alert-warning text-center"><i class="bi bi-exclamation-triangle"></i> Нет привязанных договоров для этого терминала</div>`;
+                content.style.display = 'block';
+            }
+        })
+        .catch(error => {
+            loading.style.display = 'none';
+            content.innerHTML = `<div class="alert alert-danger text-center"><i class="bi bi-x-circle"></i> Ошибка загрузки договоров: ${escapeHtml(error)}</div>`;
+            content.style.display = 'block';
+        });
+}
+
+function searchContract(contractNumber) {
+    window.open(`/contracts?q=${encodeURIComponent(contractNumber)}`, '_blank');
+}
+
+function searchContractByMAC(macAddress) {
+    fetch(`/api/contracts/search?q=${encodeURIComponent(macAddress)}`)
+        .then(response => response.json())
+        .then(data => {
+            const modal = new bootstrap.Modal(document.getElementById('searchContractModal'));
+            const resultsDiv = document.getElementById('contract-search-results');
+            if (data.contracts && data.contracts.length > 0) {
+                let html = `
+                    <div class="alert alert-success"><i class="bi bi-check-circle"></i> Найдено ${data.contracts.length} договоров по MAC ${escapeHtml(macAddress)}</div>
+                    <div class="table-responsive"><table class="table table-sm">
+                        <thead><tr><th>Договор</th><th>Логин</th><th>IP</th><th>Действия</th></tr></thead><tbody>`;
+                data.contracts.forEach(contract => {
+                    html += `<tr>
+                        <td><strong>${escapeHtml(contract.contract_number)}</strong></td>
+                        <td>${escapeHtml(contract.login || 'N/A')}</td>
+                        <td>${escapeHtml(contract.ip_address || 'N/A')}</td>
+                        <td><button class="btn btn-sm btn-outline-primary" onclick="window.open('/contracts?q=${encodeURIComponent(contract.contract_number)}', '_blank')"><i class="bi bi-eye"></i></button></td>
+                    </tr>`;
+                });
+                html += `</tbody></table></div>`;
+                resultsDiv.innerHTML = html;
+            } else {
+                resultsDiv.innerHTML = `<div class="alert alert-warning text-center"><i class="bi bi-exclamation-triangle"></i> Не найдено договоров по MAC ${escapeHtml(macAddress)}</div>`;
+            }
+            modal.show();
+        })
+        .catch(error => {
+            const modal = new bootstrap.Modal(document.getElementById('searchContractModal'));
+            const resultsDiv = document.getElementById('contract-search-results');
+            resultsDiv.innerHTML = `<div class="alert alert-danger text-center"><i class="bi bi-x-circle"></i> Ошибка поиска: ${escapeHtml(error)}</div>`;
+            modal.show();
+        });
+}
+
+function setAsMainContract(contractNumber) {
+    if (confirm(`Сделать договор ${contractNumber} основным для этой ONU?`)) {
+        fetch('/api/set_main_contract', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                device: CURRENT_DEVICE_ID,
+                interface: CURRENT_INTERFACE,
+                contract_number: contractNumber
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                showNotification('Основной договор обновлен', 'success');
+                document.getElementById('main-contract-text').textContent = contractNumber;
+                document.getElementById('main-contract-text').className = 'badge bg-success';
+                setTimeout(() => { loadAllContracts(); }, 1000);
+            } else {
+                showNotification('Ошибка: ' + data.message, 'danger');
+            }
+        })
+        .catch(error => { showNotification('Ошибка сети: ' + error, 'danger'); });
+    }
+}
+
+function cleanupMovedONU() {
+    if (!confirm('Удалить эту ONU со старого OLT? Она останется на новом месте.')) return;
+    runWithProgress(
+        'cleanup_moved',
+        fetch('/api/cleanup_moved_onu', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device: CURRENT_DEVICE_ID, interface: CURRENT_INTERFACE })
+        }),
+        {
+            redirectUrl: `/device/${CURRENT_DEVICE_ID}`,
+            successDelay: 1800
+        }
+    );
+}
+
+function deleteUnconfiguredONU() {
+    if (!confirm('Удалить эту ONU из базы данных? Она больше не прописана на OLT.')) return;
+    runWithProgress(
+        'delete_unconfigured',
+        fetch('/api/delete_onu', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device: CURRENT_DEVICE_ID, interface: CURRENT_INTERFACE })
+        }),
+        {
+            redirectUrl: `/device/${CURRENT_DEVICE_ID}`,
+            successDelay: 1800
+        }
+    );
+}
+
+// escapeHtml определён один раз в base.html (экранирует & < > " ')
+
+function refreshThisONU() {
+    if (confirm('Сканировать этот терминал? Это займет несколько секунд.')) {
+        showNotification('Сканирование терминала...', 'info');
+        const button = event.target;
+        const originalHtml = button.innerHTML;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Сканирование...';
+        button.disabled = true;
+        fetch(`/api/refresh_onu?device=${encodeURIComponent(CURRENT_DEVICE_ID)}&interface=${encodeURIComponent(CURRENT_INTERFACE)}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    // client_macs_count — число из API; оптический сигнал приводим к числу,
+                    // чтобы в toast не попадало произвольное текст-поле (defense-in-depth).
+                    const macsCount = Number(data.client_macs_count) || 0;
+                    let message = `Терминал просканирован. Обнаружено ${macsCount} подключений`;
+                    const powerNum = parseFloat(data.optical_power);
+                    if (data.optical_power !== null && data.optical_power !== undefined && !Number.isNaN(powerNum)) {
+                        message += `, уровень сигнала: ${powerNum.toFixed(2)} dBm`;
+                    } else {
+                        message += ', уровень сигнала: не обнаружен';
+                    }
+                    if (data.is_mcd) {
+                        message += ' 🏢 МКД';
+                    }
+                    showNotification(message, 'success');
+                    setTimeout(() => { window.location.reload(); }, 1500);
+                } else {
+                    showNotification('Ошибка сканирования: ' + (data.message || 'Неизвестная ошибка'), 'danger');
+                    button.innerHTML = originalHtml;
+                    button.disabled = false;
+                }
+            })
+            .catch(error => {
+                showNotification('Ошибка сети: ' + error, 'danger');
+                button.innerHTML = originalHtml;
+                button.disabled = false;
+            });
+    }
+}
+
+function editDescription() {
+    document.getElementById('description-text').style.display = 'none';
+    document.getElementById('description-edit').style.display = 'block';
+}
+
+function cancelEdit() {
+    document.getElementById('description-text').style.display = 'block';
+    document.getElementById('description-edit').style.display = 'none';
+}
+
+function saveDescription() {
+    const newDescription = document.getElementById('description-input').value.trim();
+    const originalDescription = {{ (onu.description if onu.description != onu.interface else "") | tojson }};
+    if (newDescription === originalDescription) {
+        cancelEdit();
+        return;
+    }
+    runWithProgress(
+        'update_description',
+        fetch('/api/update_onu_description', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                device: CURRENT_DEVICE_ID,
+                interface: CURRENT_INTERFACE,
+                description: newDescription
+            })
+        }),
+        { reload: true }
+    );
+}
+
+function deleteThisONU() {
+    const modal = new bootstrap.Modal(document.getElementById('deleteConfirmModal'));
+    const confirmBtn = document.getElementById('confirmDeleteBtn');
+    const confirmInput = document.getElementById('confirmText');
+    confirmInput.value = '';
+    confirmBtn.disabled = true;
+    confirmInput.addEventListener('input', function() {
+        const requiredText = `ДЕАКТИВИРОВАТЬ ${CURRENT_INTERFACE}`;
+        confirmBtn.disabled = this.value !== requiredText;
+    });
+    confirmBtn.onclick = function() {
+        performDeleteONU();
+        modal.hide();
+    };
+    modal.show();
+}
+
+function performDeleteONU() {
+    runWithProgress(
+        'delete_onu',
+        fetch('/api/delete_onu', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device: CURRENT_DEVICE_ID, interface: CURRENT_INTERFACE })
+        }),
+        {
+            redirectUrl: `/device/${CURRENT_DEVICE_ID}`,
+            successDelay: 2000
+        }
+    );
+}
+
+function showDeleteHelp() {
+    const helpDiv = document.getElementById('delete-help');
+    helpDiv.style.display = helpDiv.style.display === 'none' ? 'block' : 'none';
+}
+
+// showNotification и escapeHtml — единые реализации из static/js/common.js (base.html)
+</script>
+
+<style>
+.table th { font-weight: 600; font-size: 11px; padding: 4px 8px; }
+.table td { vertical-align: middle; padding: 4px 8px; font-size: 11px; }
+.badge { font-size: 9px; padding: 2px 4px; }
+.card-header { font-weight: 600; font-size: 12px; }
+.btn-sm { padding: 2px 4px; font-size: 10px; }
+.small { font-size: 11px; }
+.text-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.loading-spinner {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spinner-border 0.75s linear infinite;
+}
+@keyframes spinner-border {
+    to { transform: rotate(360deg); }
+}
+.operation-progress {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    z-index: 1060;
+    width: 400px;
+    max-width: calc(100vw - 40px);
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+    border: 1px solid #dee2e6;
+    overflow: hidden;
+    animation: slideInRight 0.3s ease-out;
+}
+@keyframes slideInRight {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+.operation-progress .op-header {
+    padding: 12px 16px;
+    color: white;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.operation-progress .op-header.info { background: linear-gradient(135deg, #0d6efd, #0a58ca); }
+.operation-progress .op-header.warning { background: linear-gradient(135deg, #ffc107, #e0a800); color: #212529; }
+.operation-progress .op-header.danger { background: linear-gradient(135deg, #dc3545, #b02a37); }
+.operation-progress .op-header.success { background: linear-gradient(135deg, #198754, #146c43); }
+.operation-progress .op-body { padding: 12px 16px; }
+.operation-progress .op-progress-bar {
+    height: 6px;
+    background: #e9ecef;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+.operation-progress .op-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #0d6efd, #0dcaf0);
+    transition: width 0.4s ease;
+    width: 0%;
+}
+.operation-progress .op-steps {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 12px;
+}
+.operation-progress .op-steps li {
+    padding: 4px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #6c757d;
+}
+.operation-progress .op-steps li.done { color: #198754; }
+.operation-progress .op-steps li.active { color: #0d6efd; font-weight: 600; }
+.operation-progress .op-steps li.error { color: #dc3545; font-weight: 600; }
+.operation-progress .op-steps li .step-icon { width: 16px; text-align: center; }
+.op-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: op-spin 0.8s linear infinite;
+}
+@keyframes op-spin { to { transform: rotate(360deg); } }
+</style>
+{% endblock %}

@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Вход в систему{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6 col-lg-4">
+        <div class="card shadow">
+            <div class="card-header bg-primary text-white text-center">
+                <h4 class="mb-0">
+                    <i class="bi bi-key"></i> Вход в систему
+                </h4>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('login') }}" novalidate>
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">
+                            <i class="bi bi-person"></i> Имя пользователя
+                        </label>
+                        <input type="text" class="form-control" id="username" name="username"
+                               required autofocus placeholder="Введите имя пользователя"
+                               aria-describedby="usernameHelp">
+                        <div id="usernameHelp" class="form-text">Введите ваше имя пользователя</div>
+                        <div class="invalid-feedback">Пожалуйста, введите имя пользователя</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="password" class="form-label">
+                            <i class="bi bi-lock"></i> Пароль
+                        </label>
+                        <input type="password" class="form-control" id="password" name="password"
+                               required placeholder="Введите пароль"
+                               aria-describedby="passwordHelp">
+                        <div id="passwordHelp" class="form-text">Введите ваш пароль</div>
+                        <div class="invalid-feedback">Пожалуйста, введите пароль</div>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-box-arrow-in-right"></i> Войти
+                        </button>
+                    </div>
+                    {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                    {% for category, message in messages %}
+                    {% if category == 'danger' %}
+                    <div class="alert alert-danger mt-3 mb-0" role="alert">
+                        <i class="bi bi-exclamation-triangle"></i> {{ message }}
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+                    {% endif %}
+                    {% endwith %}
+                </form>
+            </div>
+            <div class="card-footer text-center bg-light">
+                <small class="text-muted">
+                    <i class="bi bi-info-circle"></i> Для доступа обратитесь к администратору
+                </small>
+            </div>
+        </div>
+        <div class="text-center mt-3">
+            <a href="{{ url_for('index') }}" class="text-decoration-none">
+                <i class="bi bi-arrow-left"></i> Вернуться на главную
+            </a>
+        </div>
+    </div>
+</div>
+<style>
+    .card {
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    .form-control:focus {
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+    }
+    .btn-primary {
+        padding: 0.5rem;
+    }
+</style>
+<script>
+    (function() {
+        'use strict';
+        const forms = document.querySelectorAll('form[novalidate]');
+        forms.forEach(function(form) {
+            form.addEventListener('submit', function(event) {
+                if (!form.checkValidity()) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
+                form.classList.add('was-validated');
+            }, false);
+        });
+    })();
+</script>
+{% endblock %}

@@ -1,0 +1,17 @@
+[project]
+name = "epon-monitor"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Практичный набор: ошибки, пи-код, безопасность, простота, перф.
+select = ["E", "F", "W", "B", "C4", "SIM", "PIE", "PLR1704", "RUF013"]
+ignore = [
+    "E501",   # длина строк — legacy-код местами широкий
+    "SIM105", # contextlib.suppress вместо try/except/pass — читаемость важнее
+    "SIM108", # тернарники для сложных условий хуже читаются
+    "B008",   # вызовы в дефолтах аргументов (env-хелперы) — осознанно
+]

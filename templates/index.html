@@ -1,0 +1,671 @@
+{% extends "base.html" %}
+{% block title %}Мониторинг BDCOM{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitoring.css') }}">
+{% endblock %}
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/monitoring.js') }}"></script>
+<script>
+    window.monitoringConfig = {
+        devicesDataUrl: '/api/devices_data',
+        globalStatsUrl: '/api/db/stats',
+        deviceIds: {{ devices_data.keys()|list|tojson }}
+    };
+</script>
+{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0"><i class="bi bi-motherboard"></i> Система мониторинга BDCOM</h4>
+    <div class="d-flex gap-2">
+        <a href="{{ url_for('contracts_page') }}" class="btn btn-outline-info btn-sm">
+            <i class="bi bi-file-earmark-text"></i> Договоры
+        </a>
+        <button onclick="showAllMCD()" class="btn btn-outline-warning btn-sm" title="Показать все МКД-ONU">
+            <i class="bi bi-buildings"></i> МКД-ONU
+        </button>
+        <button onclick="monitoring.refreshAllDevices()" class="btn btn-outline-primary btn-sm">
+            <i class="bi bi-arrow-repeat"></i> Обновить устройства
+        </button>
+    </div>
+</div>
+<div id="update-status" class="alert alert-info alert-dismissible fade show" style="display: none;">
+    <div class="d-flex align-items-center">
+        <i class="bi bi-arrow-repeat me-2 fa-spin"></i>
+        <span id="update-status-text">Данные обновляются...</span>
+    </div>
+    <button type="button" class="btn-close" onclick="document.getElementById('update-status').style.display = 'none';" aria-label="Закрыть"></button>
+</div>
+<div id="scan-progress-container" class="card mb-3 border-primary" style="display: none;">
+    <div class="card-header bg-primary text-white py-2">
+        <div class="d-flex justify-content-between align-items-center">
+            <h6 class="mb-0">
+                <i class="bi bi-arrow-repeat"></i> Сканирование сети
+                <span id="scan-status" class="badge bg-light text-primary ms-2">Запуск...</span>
+            </h6>
+            <button type="button" class="btn-close btn-close-white" onclick="monitoring.hideProgress()" aria-label="Закрыть"></button>
+        </div>
+    </div>
+    <div class="card-body py-2">
+        <div class="row align-items-center">
+            <div class="col-md-8">
+                <div class="mb-2">
+                    <div class="d-flex justify-content-between small text-muted mb-1">
+                        <span id="progress-text">Подготовка к сканированию...</span>
+                        <span id="progress-percent">0%</span>
+                    </div>
+                    <div class="progress" style="height: 6px;">
+                        <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="row small text-muted">
+                    <div class="col-6"><i class="bi bi-cpu"></i> Устройство: <span id="current-device" class="fw-bold">-</span></div>
+                    <div class="col-3"><i class="bi bi-check-circle"></i> <span id="completed-count">0</span>/<span id="total-count">0</span></div>
+                    <div class="col-3"><i class="bi bi-clock"></i> <span id="time-remaining">--:--</span></div>
+                </div>
+            </div>
+            <div class="col-md-4 text-end">
+                <div id="scan-details" class="small">
+                    <div class="mb-1"><i class="bi bi-info-circle"></i> <span id="scan-message">Инициализация...</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="card mb-3">
+    <div class="card-header bg-light py-2">
+        <i class="bi bi-radar"></i> Сканирование сети
+    </div>
+    <div class="card-body py-2">
+        <div class="input-group">
+            <input type="text" class="form-control" id="search-input"
+                   placeholder="MAC (4092.4949.ed33 / BDCM:6B24A5A3), описание или договор (PPPOE18750)..."
+                   value="{{ request.args.get('q', '') }}" aria-label="Поиск ONU">
+            <button class="btn btn-primary" type="button" id="search-button">
+                <i class="bi bi-search"></i> Сканировать
+            </button>
+            <button class="btn btn-outline-warning" type="button" id="duplicate-search-button">
+                <i class="bi bi-copy"></i> Поиск дублей MAC
+            </button>
+            <button class="btn btn-outline-info" type="button" id="no-description-search-button">
+                <i class="bi bi-card-text"></i> ONU без описания
+            </button>
+            <button class="btn btn-outline-secondary" type="button" id="clear-search-button">
+                <i class="bi bi-eraser"></i> Очистить
+            </button>
+        </div>
+        <div class="mt-2 small text-muted">
+            <i class="bi bi-info-circle"></i>
+            Поиск работает по MAC (весь или фрагмент, напр. <code>12345678</code> найдёт
+            <code>4092.1234.5678</code>, <code>BDCM:12345678</code>, <code>HWTC:12345678</code>),
+            описанию ONU и номеру договора (напр. <code>PPPOE18750</code>).
+        </div>
+        <div id="search-indicator" class="mt-2" style="display: none;">
+            <div class="d-flex align-items-center text-muted">
+                <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                <small><i class="bi bi-broadcast"></i> Сканирование сети...</small>
+            </div>
+        </div>
+        <div id="search-results" class="mt-3" style="display: none;"></div>
+    </div>
+</div>
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-info text-white py-2"><i class="bi bi-database"></i> Статус системы</div>
+            <div class="card-body py-2">
+                <div class="row text-center g-2" id="global-stats">
+                    <div class="col-6 col-md-2">
+                        <div class="p-2 bg-light rounded border border-primary">
+                            <h5 class="text-primary mb-1">
+                                <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('all', event)">
+                                    {{ global_stats.devices_total }}
+                                </a>
+                            </h5>
+                            <small class="text-muted"><i class="bi bi-cpu"></i> <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('all', event)">Узлов сети</a></small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <div class="p-2 bg-light rounded border border-success">
+                            <h5 class="text-success mb-1">
+                                <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('all', event)">
+                                    {{ global_stats.devices_online }}
+                                </a>
+                            </h5>
+                            <small class="text-muted"><i class="bi bi-check-circle"></i> <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('all', event)">Активных</a></small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <div class="p-2 bg-light rounded border border-secondary">
+                            <h5 class="text-secondary mb-1">
+                                <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('all', event)">
+                                    {{ global_stats.onus_total }}
+                                </a>
+                            </h5>
+                            <small class="text-muted"><i class="bi bi-motherboard"></i> <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('all', event)">Всего ONU</a></small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <div class="p-2 bg-light rounded border border-info">
+                            <h5 class="text-info mb-1">
+                                <a href="#" class="text-decoration-none text-info" onclick="showGlobalOnuList('active', event)">
+                                    {{ global_stats.active_onus }}
+                                </a>
+                            </h5>
+                            <small class="text-muted"><i class="bi bi-ethernet"></i> <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('active', event)">Подключено</a></small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <div class="p-2 bg-light rounded border border-danger">
+                            <h5 class="text-danger mb-1">
+                                <a href="#" class="text-decoration-none text-danger" onclick="showGlobalOnuList('inactive', event)">
+                                    {{ global_stats.inactive_onus }}
+                                </a>
+                            </h5>
+                            <small class="text-muted"><i class="bi bi-x-circle"></i> <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('inactive', event)">Отключено</a></small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <div class="p-2 bg-light rounded border border-warning">
+                            <h5 class="text-warning mb-1">
+                                <a href="#" class="text-decoration-none text-warning" onclick="showAllMCD(event)" title="Показать все МКД-ONU">
+                                    {{ global_stats.mcd_onus|default(0) }} <i class="bi bi-buildings"></i>
+                                </a>
+                            </h5>
+                            <small class="text-muted"><i class="bi bi-buildings"></i> <a href="#" class="text-decoration-none" onclick="showAllMCD(event)">МКД-ONU</a></small>
+                        </div>
+                    </div>
+                </div>
+                <div class="row text-center g-2 mt-2">
+                    <div class="col-6 col-md-3">
+                        <div class="p-2 bg-light rounded border border-success">
+                            <h5 class="text-success mb-1">
+                                <a href="#" class="text-decoration-none text-success" onclick="showGlobalOnuList('good_signal', event)">
+                                    {{ global_stats.good_signal|default(0) }}
+                                </a>
+                            </h5>
+                            <small class="text-muted"><i class="bi bi-circle-fill text-success"></i> <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('good_signal', event)">Хороший сигнал</a></small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="p-2 bg-light rounded border border-warning">
+                            <h5 class="text-warning mb-1">
+                                <a href="#" class="text-decoration-none text-warning" onclick="showGlobalOnuList('warning_signal', event)">
+                                    {{ global_stats.warning_signal|default(0) }}
+                                </a>
+                            </h5>
+                            <small class="text-muted"><i class="bi bi-exclamation-circle-fill text-warning"></i> <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('warning_signal', event)">Предупреждение</a></small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="p-2 bg-light rounded border border-danger">
+                            <h5 class="text-danger mb-1">
+                                <a href="#" class="text-decoration-none text-danger" onclick="showGlobalOnuList('bad_signal', event)">
+                                    {{ global_stats.bad_signal|default(0) }}
+                                </a>
+                            </h5>
+                            <small class="text-muted"><i class="bi bi-x-circle-fill text-danger"></i> <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('bad_signal', event)">Плохой сигнал</a></small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="p-2 bg-light rounded border border-secondary">
+                            <h5 class="text-secondary mb-1">
+                                <a href="#" class="text-decoration-none text-secondary" onclick="showGlobalOnuList('single', event)">
+                                    {{ global_stats.single_onus|default(0) }}
+                                </a>
+                            </h5>
+                            <small class="text-muted"><i class="bi bi-person"></i> <a href="#" class="text-decoration-none" onclick="showGlobalOnuList('single', event)">Одиночных</a></small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="modal fade" id="mcdOnusModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header bg-warning text-dark py-2">
+                <h5 class="modal-title mb-0">
+                    <i class="bi bi-buildings"></i> МКД-ONU (Многоквартирные дома)
+                    <span class="badge bg-dark ms-2" id="mcd-onus-count">0</span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body p-3">
+                <div class="alert alert-warning small py-2 mb-2">
+                    <i class="bi bi-info-circle"></i>
+                    МКД-ONU — это терминалы на многоквартирные дома (описание начинается с <code>+</code>).
+                </div>
+                <div class="d-flex gap-2 mb-3">
+                    <button type="button" class="btn btn-success btn-sm" onclick="exportMcdToExcel()">
+                        <i class="bi bi-file-excel"></i> Экспорт в Excel
+                    </button>
+                </div>
+                <div id="mcd-onus-content">
+                    <div class="text-center py-4">
+                        <div class="spinner-border spinner-border-sm text-warning"></div>
+                        <p class="mt-2 small text-muted">Загрузка списка МКД-ONU...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer py-2">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="modal fade" id="globalOnuListModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header py-2" id="globalOnuListModalHeader">
+                <h5 class="modal-title mb-0">
+                    <i class="bi bi-list-ul"></i>
+                    <span id="globalOnuListModalTitle">Список ONU</span>
+                    <span class="badge bg-light text-dark ms-2" id="globalOnuListModalCount">0</span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-3">
+                <div class="d-flex gap-2 mb-3">
+                    <button type="button" class="btn btn-success btn-sm" onclick="exportGlobalOnuList()">
+                        <i class="bi bi-file-excel"></i> Экспорт в Excel
+                    </button>
+                </div>
+                <div id="globalOnuListModalContent">
+                    <div class="text-center py-4">
+                        <div class="spinner-border spinner-border-sm text-primary"></div>
+                        <p class="mt-2 small text-muted">Загрузка...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer py-2">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="modal fade" id="deviceOnuListModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header py-2" id="deviceOnuListModalHeader">
+                <h5 class="modal-title mb-0">
+                    <i class="bi bi-list-ul"></i>
+                    <span id="deviceOnuListModalTitle">Список ONU</span>
+                    <span class="badge bg-light text-dark ms-2" id="deviceOnuListModalCount">0</span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-3">
+                <div class="d-flex gap-2 mb-3">
+                    <button type="button" class="btn btn-success btn-sm" onclick="exportDeviceOnuList()">
+                        <i class="bi bi-file-excel"></i> Экспорт в Excel
+                    </button>
+                </div>
+                <div id="deviceOnuListModalContent">
+                    <div class="text-center py-4">
+                        <div class="spinner-border spinner-border-sm text-primary"></div>
+                        <p class="mt-2 small text-muted">Загрузка...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer py-2">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="modal fade" id="inactiveOnusModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white py-2">
+                <h5 class="modal-title mb-0">
+                    <i class="bi bi-exclamation-triangle"></i> Отключенные терминалы
+                    <span class="badge bg-light text-danger ms-2" id="inactive-onus-count">0</span>
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body p-3">
+                <div id="inactive-onus-content">
+                    <div class="text-center py-4">
+                        <div class="spinner-border spinner-border-sm text-danger"></div>
+                        <p class="mt-2 small text-muted">Загрузка данных...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer py-2">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>
+                <button type="button" class="btn btn-success btn-sm" onclick="monitoring.exportInactiveONUsToExcel()">
+                    <i class="bi bi-file-excel"></i> Экспорт в Excel
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row" id="devices-container">
+    {% for device_id, data in devices_data.items() %}
+    {% set device_stats = devices_stats.get(device_id, {}) %}
+    {% set device_config = DEVICES.get(device_id, {}) %}
+    {% set device_name = device_config.get('name', device_id) %}
+    {% set device_ip = device_config.get('hostname', '') %}
+    <div class="col-xl-4 col-lg-6 col-md-6 mb-3" id="device-{{ device_id }}">
+        <div class="card h-100 shadow-sm device-card">
+            <div class="card-header {% if data.success %}bg-success{% else %}bg-danger{% endif %} text-white py-2">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-2">
+                        <h6 class="mb-0">
+                            <a href="{{ url_for('device_detail', device_id=device_id) }}" target="_blank" class="text-white text-decoration-none d-flex align-items-center" title="Детали узла">
+                                <i class="bi bi-cpu me-1"></i> {{ device_name }}
+                                <i class="bi bi-box-arrow-up-right ms-1 small"></i>
+                            </a>
+                        </h6>
+                        {% if device_ip %}
+                        <a href="http://{{ device_ip }}" target="_blank" class="btn btn-outline-light btn-xs d-flex align-items-center" title="Доступ к узлу ({{ device_ip }})">
+                            <i class="bi bi-terminal me-1"></i> SSH
+                        </a>
+                        {% endif %}
+                    </div>
+                    <span id="status-{{ device_id }}" class="badge {% if data.get('enriched') %}bg-info{% else %}bg-warning{% endif %}">
+                        {% if data.get('enriched') %}<i class="bi bi-check-circle"></i> Синхронизирован{% else %}<i class="bi bi-hourglass"></i> Сканирование{% endif %}
+                    </span>
+                </div>
+                <small id="timestamp-{{ device_id }}" class="text-white-50">Обновление: {{ data.timestamp }}</small>
+            </div>
+            <div class="card-body py-2">
+                {% if data.success %}
+                <div class="row small g-1">
+                    <div class="col-6">
+                        <div class="text-center p-1 bg-light rounded border border-primary">
+                            <a href="#" class="text-decoration-none text-primary fw-bold" data-onu-fn="showDeviceOnuList" data-onu-kind="all" data-onu-device="{{ device_id | jsattr }}">
+                                <span id="total-{{ device_id }}">{{ device_stats.get('total', 0) }}</span>
+                            </a>
+                            <small class="d-block"><i class="bi bi-motherboard"></i> Всего ONU</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-center p-1 bg-light rounded border border-success">
+                            <a href="#" class="text-decoration-none text-success fw-bold" data-onu-fn="showDeviceOnuList" data-onu-kind="active" data-onu-device="{{ device_id | jsattr }}">
+                                <span id="active-{{ device_id }}">{{ device_stats.get('active', 0) }}</span>
+                            </a>
+                            <small class="d-block"><i class="bi bi-check-circle"></i> Подключено</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-center p-1 bg-light rounded border border-danger">
+                            <a href="#" class="text-decoration-none text-danger fw-bold" data-onu-fn="showDeviceOnuList" data-onu-kind="inactive" data-onu-device="{{ device_id | jsattr }}">
+                                <span id="inactive-{{ device_id }}">{{ device_stats.get('inactive', 0) }}</span>
+                            </a>
+                            <small class="d-block"><i class="bi bi-x-circle"></i> Отключено</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-center p-1 bg-light rounded border border-secondary">
+                            <a href="#" class="text-decoration-none text-secondary fw-bold" data-onu-fn="showDeviceOnuList" data-onu-kind="single" data-onu-device="{{ device_id | jsattr }}">
+                                <span id="single-{{ device_id }}">{{ device_stats.get('single', device_stats.get('total', 0) - device_stats.get('mcd', 0)) }}</span>
+                            </a>
+                            <small class="d-block"><i class="bi bi-person"></i> Одиночных</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-center p-1 bg-light rounded border border-warning">
+                            <a href="#" class="text-decoration-none text-warning fw-bold" data-onu-fn="showDeviceOnuList" data-onu-kind="mcd" data-onu-device="{{ device_id | jsattr }}">
+                                <span id="mcd-{{ device_id }}">{{ device_stats.get('mcd', 0) }}</span>
+                                <i class="bi bi-buildings"></i>
+                            </a>
+                            <small class="d-block"><i class="bi bi-buildings"></i> МКД-ONU</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-center p-1 bg-light rounded border border-success">
+                            <a href="#" class="text-decoration-none text-success fw-bold" data-onu-fn="showDeviceOnuList" data-onu-kind="good_signal" data-onu-device="{{ device_id | jsattr }}">
+                                <span id="good-{{ device_id }}">{{ device_stats.get('good_signal', 0) }}</span>
+                            </a>
+                            <small class="d-block"><i class="bi bi-circle-fill text-success"></i> Хороший</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-center p-1 bg-light rounded border border-warning">
+                            <a href="#" class="text-decoration-none text-warning fw-bold" data-onu-fn="showDeviceOnuList" data-onu-kind="warning_signal" data-onu-device="{{ device_id | jsattr }}">
+                                <span id="warning-{{ device_id }}">{{ device_stats.get('warning_signal', 0) }}</span>
+                            </a>
+                            <small class="d-block"><i class="bi bi-exclamation-circle-fill text-warning"></i> Предупр.</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-center p-1 bg-light rounded border border-danger">
+                            <a href="#" class="text-decoration-none text-danger fw-bold" data-onu-fn="showDeviceOnuList" data-onu-kind="bad_signal" data-onu-device="{{ device_id | jsattr }}">
+                                <span id="bad-{{ device_id }}">{{ device_stats.get('bad_signal', 0) }}</span>
+                            </a>
+                            <small class="d-block"><i class="bi bi-x-circle-fill text-danger"></i> Плохой</small>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <div class="alert alert-warning py-2 mb-0 small">
+                    <i class="bi bi-exclamation-triangle"></i> <strong>Сбой подключения</strong>
+                    {% if data.error %}<br><small>{{ data.error|truncate(50) }}</small>{% endif %}
+                </div>
+                {% endif %}
+                <div class="d-flex gap-1 mt-2">
+                    <a href="{{ url_for('device_detail', device_id=device_id) }}" class="btn btn-primary btn-sm flex-fill"><i class="bi bi-eye"></i> Детализация</a>
+                    <a href="/api/export/{{ device_id }}" class="btn btn-success btn-sm" title="Экспорт данных"><i class="bi bi-download"></i></a>
+                    <button class="btn btn-outline-secondary btn-sm refresh-device" data-device-id="{{ device_id }}" title="Пересканировать"><i class="bi bi-arrow-repeat"></i></button>
+                </div>
+                {% if device_ip %}
+                <div class="mt-2 text-center"><small class="text-muted"><i class="bi bi-ip"></i> Адрес: {{ device_ip }}</small></div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="col-12">
+        <div class="alert alert-info text-center">
+            <i class="bi bi-wifi-off"></i> <h5>Сеть недоступна</h5>
+            <p class="mb-0">Проверьте подключение или дождитесь инициализации системы.</p>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+<script>
+    function showAllMCD(event) {
+        if (event) event.preventDefault();
+        const modal = new bootstrap.Modal(document.getElementById('mcdOnusModal'));
+        const content = document.getElementById('mcd-onus-content');
+        const countBadge = document.getElementById('mcd-onus-count');
+        content.innerHTML = `<div class="text-center py-4"><div class="spinner-border spinner-border-sm text-warning"></div><p class="mt-2 small text-muted">Загрузка списка МКД-ONU...</p></div>`;
+        modal.show();
+        fetch('/api/mcd_onus')
+            .then(response => response.json())
+            .then(data => {
+                if (data.mcd_onus && data.mcd_onus.length > 0) {
+                    countBadge.textContent = data.total_count;
+                    const inactiveCount = data.mcd_onus.filter(o => !o.optical_power).length;
+                    let html = `<div class="alert alert-warning small py-2 mb-2">
+                        <i class="bi bi-info-circle"></i> Найдено <strong>${data.total_count}</strong> МКД-ONU.
+                        Неактивных: <strong class="text-danger">${inactiveCount}</strong>
+                    </div>`;
+                    html += `<div class="table-responsive"><table class="table table-sm table-hover table-striped mb-0 small">
+                        <thead class="table-light"><tr>
+                        <th><i class="bi bi-cpu"></i></th>
+                        <th>Устройство</th>
+                        <th>Интерфейс</th>
+                        <th>Описание</th>
+                        <th>Статус</th>
+                        <th>Сигнал</th>
+                        <th><i class="bi bi-clock"></i> Послед. активность</th>
+                        <th>Действия</th>
+                        </tr></thead><tbody>`;
+                    data.mcd_onus.forEach(onu => {
+                        const row = window.onuRowHtml(onu, { showMac: false, rowClassMode: 'mcd' });
+                        // ведущий столбец-иконка МКД вставляется сразу после <tr ...>
+                        html += row.replace(/^<tr([^>]*)>/, '<tr$1><td><span class="badge bg-warning text-dark" title="МКД-ONU"><i class="bi bi-buildings"></i></span></td>');
+                    });
+                    html += `</tbody></table></div>`;
+                    content.innerHTML = html;
+                } else {
+                    content.innerHTML = `<div class="alert alert-info text-center small"><i class="bi bi-info-circle"></i> МКД-ONU не найдены. Чтобы ONU считалась МКД, начните её описание с символа <code>+</code>.</div>`;
+                }
+            })
+            .catch(error => {
+                content.innerHTML = `<div class="alert alert-danger small"><i class="bi bi-x-circle"></i> Ошибка загрузки: ${escapeHtml(error)}</div>`;
+            });
+    }
+    function exportMcdToExcel() {
+        window.location.href = '/api/export/mcd_onus';
+    }
+    let currentDeviceFilterType = 'all';
+    let currentDeviceId = '';
+    const DEVICE_FILTER_TITLES = {
+        'all': 'Все терминалы устройства',
+        'active': 'Подключенные терминалы',
+        'inactive': 'Отключенные терминалы',
+        'good_signal': 'Терминалы с хорошим сигналом',
+        'warning_signal': 'Терминалы с предупреждением',
+        'bad_signal': 'Терминалы с плохим сигналом',
+        'single': 'Одиночные терминалы',
+        'mcd': 'МКД-ONU устройства'
+    };
+    const DEVICE_HEADER_COLORS = {
+        'all': 'bg-primary text-white',
+        'active': 'bg-success text-white',
+        'inactive': 'bg-danger text-white',
+        'good_signal': 'bg-success text-white',
+        'warning_signal': 'bg-warning text-dark',
+        'bad_signal': 'bg-danger text-white',
+        'single': 'bg-secondary text-white',
+        'mcd': 'bg-warning text-dark'
+    };
+    function showDeviceOnuList(filterType, deviceId, event) {
+        if (event) event.preventDefault();
+        currentDeviceFilterType = filterType;
+        currentDeviceId = deviceId;
+        const modal = new bootstrap.Modal(document.getElementById('deviceOnuListModal'));
+        const header = document.getElementById('deviceOnuListModalHeader');
+        header.className = 'modal-header py-2 ' + (DEVICE_HEADER_COLORS[filterType] || 'bg-primary text-white');
+        document.getElementById('deviceOnuListModalTitle').textContent = DEVICE_FILTER_TITLES[filterType] || 'Список ONU';
+        document.getElementById('deviceOnuListModalCount').textContent = '0';
+        document.getElementById('deviceOnuListModalContent').innerHTML = `
+            <div class="text-center py-4">
+                <div class="spinner-border spinner-border-sm text-primary"></div>
+                <p class="mt-2 small text-muted">Загрузка списка...</p>
+            </div>`;
+        modal.show();
+        fetch(`/api/onu_list?type=${encodeURIComponent(filterType)}&device=${encodeURIComponent(deviceId)}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success' && data.onus && data.onus.length > 0) {
+                    document.getElementById('deviceOnuListModalCount').textContent = data.total_count;
+                    let html = `<div class="alert alert-info small py-2 mb-2">
+                        <i class="bi bi-info-circle"></i> Найдено <strong>${data.total_count}</strong> ONU
+                    </div>`;
+                    html += `<div class="table-responsive"><table class="table table-sm table-hover table-striped mb-0 small">
+                        <thead class="table-light"><tr>
+                        <th>Устройство</th><th>Интерфейс</th><th>MAC</th>
+                        <th>Описание</th><th>Статус</th><th>Сигнал</th>
+                        <th>Послед. активность</th><th>Действия</th>
+                        </tr></thead><tbody>`;
+                    data.onus.forEach(onu => {
+                        html += window.onuRowHtml(onu, { rowClassMode: 'default' });
+                    });
+                    html += `</tbody></table></div>`;
+                    document.getElementById('deviceOnuListModalContent').innerHTML = html;
+                } else {
+                    document.getElementById('deviceOnuListModalContent').innerHTML = `
+                        <div class="alert alert-info text-center small">
+                            <i class="bi bi-info-circle"></i> ONU не найдены
+                        </div>`;
+                }
+            })
+            .catch(err => {
+                document.getElementById('deviceOnuListModalContent').innerHTML = `
+                    <div class="alert alert-danger small">
+                        <i class="bi bi-x-circle"></i> Ошибка загрузки: ${escapeHtml(err)}
+                    </div>`;
+            });
+    }
+    function exportDeviceOnuList() {
+        window.location.href = `/api/export/onu_list?type=${encodeURIComponent(currentDeviceFilterType)}&device=${encodeURIComponent(currentDeviceId)}`;
+    }
+    let currentGlobalFilterType = 'all';
+    const GLOBAL_FILTER_TITLES = {
+        'all': 'Все терминалы в сети',
+        'active': 'Активные терминалы',
+        'inactive': 'Неактивные терминалы',
+        'good_signal': 'Терминалы с хорошим сигналом',
+        'warning_signal': 'Терминалы с предупреждением',
+        'bad_signal': 'Терминалы с плохим сигналом',
+        'single': 'Одиночные терминалы',
+        'mcd': 'МКД-ONU'
+    };
+    const GLOBAL_HEADER_COLORS = {
+        'all': 'bg-primary text-white',
+        'active': 'bg-success text-white',
+        'inactive': 'bg-danger text-white',
+        'good_signal': 'bg-success text-white',
+        'warning_signal': 'bg-warning text-dark',
+        'bad_signal': 'bg-danger text-white',
+        'single': 'bg-secondary text-white',
+        'mcd': 'bg-warning text-dark'
+    };
+    function showGlobalOnuList(filterType, event) {
+        if (event) event.preventDefault();
+        currentGlobalFilterType = filterType;
+        const modal = new bootstrap.Modal(document.getElementById('globalOnuListModal'));
+        const header = document.getElementById('globalOnuListModalHeader');
+        header.className = 'modal-header py-2 ' + (GLOBAL_HEADER_COLORS[filterType] || 'bg-primary text-white');
+        document.getElementById('globalOnuListModalTitle').textContent = GLOBAL_FILTER_TITLES[filterType] || 'Список ONU';
+        document.getElementById('globalOnuListModalCount').textContent = '0';
+        document.getElementById('globalOnuListModalContent').innerHTML = `
+            <div class="text-center py-4">
+                <div class="spinner-border spinner-border-sm text-primary"></div>
+                <p class="mt-2 small text-muted">Загрузка списка...</p>
+            </div>`;
+        modal.show();
+        fetch(`/api/onu_list?type=${encodeURIComponent(filterType)}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success' && data.onus && data.onus.length > 0) {
+                    document.getElementById('globalOnuListModalCount').textContent = data.total_count;
+                    let html = `<div class="alert alert-info small py-2 mb-2">
+                        <i class="bi bi-info-circle"></i> Найдено <strong>${data.total_count}</strong> ONU
+                    </div>`;
+                    html += `<div class="table-responsive"><table class="table table-sm table-hover table-striped mb-0 small">
+                        <thead class="table-light"><tr>
+                        <th>Устройство</th><th>Интерфейс</th><th>MAC</th>
+                        <th>Описание</th><th>Статус</th><th>Сигнал</th>
+                        <th>Послед. активность</th><th>Действия</th>
+                        </tr></thead><tbody>`;
+                    data.onus.forEach(onu => {
+                        html += window.onuRowHtml(onu, { rowClassMode: 'default' });
+                    });
+                    html += `</tbody></table></div>`;
+                    document.getElementById('globalOnuListModalContent').innerHTML = html;
+                } else {
+                    document.getElementById('globalOnuListModalContent').innerHTML = `
+                        <div class="alert alert-info text-center small">
+                            <i class="bi bi-info-circle"></i> ONU не найдены
+                        </div>`;
+                }
+            })
+            .catch(err => {
+                document.getElementById('globalOnuListModalContent').innerHTML = `
+                    <div class="alert alert-danger small">
+                        <i class="bi bi-x-circle"></i> Ошибка загрузки: ${escapeHtml(err)}
+                    </div>`;
+            });
+    }
+    function exportGlobalOnuList() {
+        window.location.href = `/api/export/onu_list?type=${encodeURIComponent(currentGlobalFilterType)}`;
+    }
+
+    // Делегирование кликов по счётчикам ONU: данные берутся из data-* атрибутов,
+    // инлайновый onclick с Jinja-подстановкой не используется (защита от JS-инъекций).
+    document.addEventListener('click', function (e) {
+        const el = e.target.closest('[data-onu-fn]');
+        if (!el) return;
+        e.preventDefault();
+        if (el.dataset.onuFn === 'showDeviceOnuList') {
+            showDeviceOnuList(el.dataset.onuKind, el.dataset.onuDevice, e);
+        }
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,910 @@
+{% extends "base.html" %}
+{% block title %}Узел {{ device_name }}{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitoring.css') }}">
+{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0"><i class="bi bi-cpu"></i> Узел сети: {{ device_name }}</h4>
+    <div>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary btn-sm"><i class="bi bi-arrow-left"></i> Назад к списку устройств</a>
+        <a href="/api/export/{{ device_id }}" class="btn btn-success btn-sm" title="Экспорт данных"><i class="bi bi-download"></i> Экспорт</a>
+        {% if role == 'admin' %}
+        <button onclick="refreshDevice()" class="btn btn-outline-primary btn-sm"><i class="bi bi-arrow-repeat"></i> Сканировать</button>
+        {% endif %}
+    </div>
+</div>
+
+<div id="device-scan-progress" class="card mb-3 border-warning" style="display: none;">
+    <div class="card-header bg-warning text-dark py-2">
+        <div class="d-flex justify-content-between align-items-center">
+            <h6 class="mb-0">
+                <i class="bi bi-arrow-repeat"></i> Сканирование устройства
+                <span class="badge bg-light text-warning ms-2" id="device-scan-status">В процессе</span>
+            </h6>
+            <button type="button" class="btn-close" onclick="hideDeviceProgress()" aria-label="Закрыть"></button>
+        </div>
+    </div>
+    <div class="card-body py-2">
+        <div class="row align-items-center">
+            <div class="col-md-9">
+                <div class="mb-2">
+                    <div class="d-flex justify-content-between small text-muted mb-1">
+                        <span id="device-progress-text">Подключение к устройству...</span>
+                        <span id="device-progress-percent">0%</span>
+                    </div>
+                    <div class="progress" style="height: 6px;">
+                        <div id="device-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-warning"
+                             role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 text-end">
+                <div class="small text-muted">
+                    <i class="bi bi-clock"></i>
+                    <span id="device-time-estimate">~30 сек</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% set total_onus_count = stats.total|default(0) %}
+{% set active_onus_count = stats.active|default(0) %}
+{% set inactive_onus_count = stats.inactive|default(0) %}
+{% set signal_onus_count = stats.signal|default(0) %}
+{% set moved_onus_count = stats.moved|default(0) %}
+{% set configured_but_inactive = stats.configured_but_inactive|default(0) %}
+{% set mcd_onus_count = stats.mcd|default(0) %}
+{% set mcd_active_count = stats.mcd_active|default(0) %}
+{% set single_onus_count = stats.single|default(total_onus_count - mcd_onus_count) %}
+{% set good_signal_count = stats.good_signal|default(0) %}
+{% set warning_signal_count = stats.warning_signal|default(0) %}
+{% set bad_signal_count = stats.bad_signal|default(0) %}
+{% set with_contract_count = stats.with_contract|default(0) %}
+
+<div class="card mb-3">
+    <div class="card-header bg-info text-white py-2">
+        <div class="d-flex justify-content-between align-items-center">
+            <h6 class="mb-0"><i class="bi bi-database"></i> Статус узла</h6>
+            <span class="badge {% if is_enriched %}bg-light text-dark{% else %}bg-warning text-dark{% endif %}">
+                {% if is_enriched %}✅ Синхронизирован{% else %}⏳ Сканирование{% endif %}
+            </span>
+        </div>
+    </div>
+    <div class="card-body py-2">
+        <div class="row small">
+            <div class="col-md-6">
+                <p class="mb-1">
+                    <i class="bi bi-clock"></i> <strong>Последнее сканирование:</strong>
+                    <span id="device-timestamp">{{ timestamp }}</span>
+                </p>
+                <p class="mb-1">
+                    <i class="bi bi-motherboard"></i> <strong>Всего терминалов:</strong>
+                    <span class="badge bg-secondary" id="device-total">{{ total_onus_count }}</span>
+                </p>
+            </div>
+            <div class="col-md-6">
+                <p class="mb-1">
+                    <i class="bi bi-ethernet"></i> <strong>Портов:</strong>
+                    <span class="badge bg-primary">{{ onu_by_interface.keys()|length }}</span>
+                </p>
+                <p class="mb-1">
+                    <i class="bi bi-activity"></i> <strong>Статус данных:</strong>
+                    <span class="badge {% if is_enriched %}bg-success{% else %}bg-warning text-dark{% endif %}" id="device-status">
+                        {% if is_enriched %}Полные{% else %}Базовые{% endif %}
+                    </span>
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header bg-light py-2">
+        <h6 class="mb-0"><i class="bi bi-funnel"></i> Фильтры сканирования</h6>
+    </div>
+    <div class="card-body py-2">
+        <form method="get" class="row g-2 small">
+            <div class="col-6 col-md-4 col-lg">
+                <label class="form-label mb-0" for="status-filter">Статус:</label>
+                <select name="status" id="status-filter" class="form-select form-select-sm" onchange="this.form.submit()">
+                    <option value="all" {% if current_status == 'all' %}selected{% endif %}>Все статусы</option>
+                    {% for status in statuses %}
+                    <option value="{{ status }}" {% if current_status == status %}selected{% endif %}>{{ status }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <label class="form-label mb-0" for="branch-filter">Порт:</label>
+                <select name="branch" id="branch-filter" class="form-select form-select-sm" onchange="this.form.submit()">
+                    <option value="all" {% if current_branch == 'all' %}selected{% endif %}>Все порты</option>
+                    {% for branch in branches %}
+                    <option value="{{ branch }}" {% if current_branch == branch %}selected{% endif %}>{{ branch }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <label class="form-label mb-0" for="reason-filter">Причина отключения:</label>
+                <select name="reason" id="reason-filter" class="form-select form-select-sm" onchange="this.form.submit()">
+                    <option value="all" {% if current_reason == 'all' %}selected{% endif %}>Все причины</option>
+                    {% for reason in reasons %}
+                    {% if reason %}
+                    <option value="{{ reason }}" {% if current_reason == reason %}selected{% endif %}>{{ reason }}</option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <label class="form-label mb-0" for="signal-filter">Сигнал:</label>
+                <select name="signal" id="signal-filter" class="form-select form-select-sm" onchange="this.form.submit()">
+                    <option value="all" {% if current_signal == 'all' %}selected{% endif %}>Все сигналы</option>
+                    <option value="has_signal" {% if current_signal == 'has_signal' %}selected{% endif %}>С данными сигнала</option>
+                    <option value="no_signal" {% if current_signal == 'no_signal' %}selected{% endif %}>Без данных сигнала</option>
+                    <option value="good" {% if current_signal == 'good' %}selected{% endif %}>Хороший (> -25 dBm)</option>
+                    <option value="warning" {% if current_signal == 'warning' %}selected{% endif %}>Предупреждение (-27..-25 dBm)</option>
+                    <option value="bad" {% if current_signal == 'bad' %}selected{% endif %}>Плохой (< -27 dBm)</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <label class="form-label mb-0" for="contract-filter">Договор:</label>
+                <select name="contract" id="contract-filter" class="form-select form-select-sm" onchange="this.form.submit()">
+                    <option value="all" {% if current_contract == 'all' %}selected{% endif %}>Все договоры</option>
+                    <option value="with_contract" {% if current_contract == 'with_contract' %}selected{% endif %}>С договором</option>
+                    <option value="without_contract" {% if current_contract == 'without_contract' %}selected{% endif %}>Без договора</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <label class="form-label mb-0" for="moved-filter">Переезд:</label>
+                <select name="moved" id="moved-filter" class="form-select form-select-sm" onchange="this.form.submit()">
+                    <option value="all" {% if current_moved == 'all' %}selected{% endif %}>Все ONU</option>
+                    <option value="moved" {% if current_moved == 'moved' %}selected{% endif %}>Переехавшие</option>
+                    <option value="not_moved" {% if current_moved == 'not_moved' %}selected{% endif %}>Не переезжали</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-4 col-lg">
+                <label class="form-label mb-0" for="mcd-filter">🏢 МКД:</label>
+                <select name="mcd" id="mcd-filter" class="form-select form-select-sm" onchange="this.form.submit()">
+                    <option value="all" {% if current_mcd == 'all' %}selected{% endif %}>Все ONU</option>
+                    <option value="only_mcd" {% if current_mcd == 'only_mcd' %}selected{% endif %}>🏢 Только МКД</option>
+                    <option value="only_single" {% if current_mcd == 'only_single' %}selected{% endif %}>Только одиночные</option>
+                </select>
+            </div>
+            <div class="col-12 mt-2">
+                <button type="submit" class="btn btn-primary btn-sm">Применить фильтры</button>
+                <a href="{{ url_for('device_detail', device_id=device_id) }}" class="btn btn-secondary btn-sm">Сбросить</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div class="col-6 col-md-4 col-lg mb-2">
+        <div class="card text-center py-1">
+            <div class="card-body p-1">
+                <h6 class="card-title mb-0">
+                    <a href="#" class="text-decoration-none text-dark" data-onu-fn="showOnuListModal" data-onu-kind="all" data-onu-device="{{ device_id | jsattr }}">
+                        {{ total_onus_count }}
+                    </a>
+                </h6>
+                <p class="card-text mb-0 small">Всего ONU</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-lg mb-2">
+        <div class="card text-center py-1">
+            <div class="card-body p-1">
+                <h6 class="card-title text-success mb-0">
+                    <a href="#" class="text-decoration-none text-success" data-onu-fn="showOnuListModal" data-onu-kind="active" data-onu-device="{{ device_id | jsattr }}">
+                        {{ active_onus_count }}
+                    </a>
+                </h6>
+                <p class="card-text mb-0 small">Подключено</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-lg mb-2">
+        <div class="card text-center py-1">
+            <div class="card-body p-1">
+                <h6 class="card-title text-danger mb-0">
+                    <a href="#" class="text-decoration-none text-danger" data-onu-fn="showOnuListModal" data-onu-kind="inactive" data-onu-device="{{ device_id | jsattr }}">
+                        {{ inactive_onus_count }}
+                    </a>
+                </h6>
+                <p class="card-text mb-0 small">Отключено</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-lg mb-2">
+        <div class="card text-center py-1">
+            <div class="card-body p-1">
+                <h6 class="card-title text-secondary mb-0">
+                    <a href="#" class="text-decoration-none text-secondary" data-onu-fn="showOnuListModal" data-onu-kind="single" data-onu-device="{{ device_id | jsattr }}">
+                        {{ single_onus_count }}
+                    </a>
+                </h6>
+                <p class="card-text mb-0 small"><i class="bi bi-person"></i> Одиночных</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-lg mb-2">
+        <div class="card text-center py-1 border-warning">
+            <div class="card-body p-1">
+                <h6 class="card-title text-warning mb-0">
+                    <a href="#" class="text-decoration-none text-warning" data-onu-fn="showOnuListModal" data-onu-kind="mcd" data-onu-device="{{ device_id | jsattr }}">
+                        {{ mcd_onus_count }} <i class="bi bi-buildings"></i>
+                    </a>
+                </h6>
+                <p class="card-text mb-0 small">🏢 МКД-ONU</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-lg mb-2">
+        <div class="card text-center py-1">
+            <div class="card-body p-1">
+                <h6 class="card-title text-success mb-0">
+                    <a href="#" class="text-decoration-none text-success" data-onu-fn="showOnuListModal" data-onu-kind="good_signal" data-onu-device="{{ device_id | jsattr }}">
+                        {{ good_signal_count }}
+                    </a>
+                </h6>
+                <p class="card-text mb-0 small">🟢 Хороший сигнал</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-lg mb-2">
+        <div class="card text-center py-1 border-warning">
+            <div class="card-body p-1">
+                <h6 class="card-title text-warning mb-0">
+                    <a href="#" class="text-decoration-none text-warning" data-onu-fn="showOnuListModal" data-onu-kind="warning_signal" data-onu-device="{{ device_id | jsattr }}">
+                        {{ warning_signal_count }}
+                    </a>
+                </h6>
+                <p class="card-text mb-0 small">🟡 Предупреждение</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-lg mb-2">
+        <div class="card text-center py-1">
+            <div class="card-body p-1">
+                <h6 class="card-title text-danger mb-0">
+                    <a href="#" class="text-decoration-none text-danger" data-onu-fn="showOnuListModal" data-onu-kind="bad_signal" data-onu-device="{{ device_id | jsattr }}">
+                        {{ bad_signal_count }}
+                    </a>
+                </h6>
+                <p class="card-text mb-0 small">🔴 Плохой сигнал</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-lg mb-2">
+        <div class="card text-center py-1">
+            <div class="card-body p-1">
+                <h6 class="card-title text-warning mb-0">
+                    <a href="#" class="text-decoration-none text-warning" data-onu-fn="showMovedOnusModal" data-onu-device="{{ device_id | jsattr }}">
+                        {{ moved_onus_count }}
+                    </a>
+                </h6>
+                <p class="card-text mb-0 small">Переехало</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-md-4 col-lg mb-2">
+        <div class="card text-center py-1">
+            <div class="card-body p-1">
+                <h6 class="card-title text-primary mb-0">
+                    <span class="text-decoration-none text-primary">
+                        {{ with_contract_count }}
+                    </span>
+                </h6>
+                <p class="card-text mb-0 small">С договором</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if configured_but_inactive > 0 %}
+<div class="alert alert-warning alert-permanent mb-3 py-2">
+    <i class="bi bi-exclamation-triangle"></i>
+    <strong>Внимание!</strong> Обнаружено {{ configured_but_inactive }} ONU, которые прописаны на OLT, но не активны.
+    {% if role == 'admin' %}
+    <button class="btn btn-sm btn-outline-warning ms-2" onclick="showConfiguredButInactive()">
+        <i class="bi bi-eye"></i> Показать
+    </button>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if current_mcd == 'only_mcd' %}
+<div class="alert alert-warning alert-permanent mb-3 py-2 border-warning border-2">
+    <i class="bi bi-buildings fs-4"></i>
+    <strong>Показаны только МКД-ONU (многоквартирные дома).</strong>
+    Описание таких ONU начинается с символа <code>+</code>.
+    Всего найдено: <strong>{{ mcd_count }}</strong>
+</div>
+{% endif %}
+
+<div class="alert alert-light small py-2 mb-3">
+    <strong><i class="bi bi-info-circle"></i> Обозначения:</strong>
+    <span class="badge bg-warning text-dark ms-2"><i class="bi bi-buildings"></i></span> МКД
+    <span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i></span> Активна
+    <span class="badge bg-warning text-dark ms-2"><i class="bi bi-arrow-right"></i></span> Уехала на другой ОЛТ
+    <span class="badge bg-info ms-2"><i class="bi bi-arrow-left"></i></span> Приехала с другого ОЛТ
+    <span class="badge bg-secondary ms-2"><i class="bi bi-pencil-square"></i></span> Прописана, не активна
+    <span class="badge bg-danger ms-2"><i class="bi bi-x-circle"></i></span> Неактивна
+</div>
+
+{% for interface, onus in onu_by_interface.items() %}
+<div class="card mb-3">
+    <div class="card-header bg-dark text-white py-2">
+        <h6 class="mb-0">
+            <i class="bi bi-ethernet"></i> Порт: {{ interface }}
+            <span class="badge bg-light text-dark">{{ onus|length }} терминалов</span>
+        </h6>
+    </div>
+    <div class="card-body p-0">
+        <table class="table table-sm table-hover table-striped mb-0 small w-100">
+            <thead class="table-light">
+                <tr>
+                    <th style="width: 3%"></th>
+                    <th style="width: 4%">ID</th>
+                    <th style="width: 10%">MAC</th>
+                    <th style="width: 16%">Описание</th>
+                    <th style="width: 8%">Договор</th>
+                    <th style="width: 6%">Вендор</th>
+                    <th style="width: 6%">Модель</th>
+                    <th style="width: 7%">Статус</th>
+                    <th style="width: 9%">Оптический сигнал</th>
+                    <th style="width: 9%">Причина откл.</th>
+                    <th style="width: 5%">Клиентов</th>
+                    <th style="width: 10%">Не на связи с</th>
+                    <th style="width: 7%">Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for onu in onus %}
+                {% set moved_to_title = '🟡 ONU уехала на ' ~ (onu.moved_to_device_name or onu.moved_to) ~ ':' ~ (onu.moved_to_interface or '') %}
+                {% set moved_from_title = '🔵 ONU приехала с ' ~ (onu.moved_from_device_name or onu.moved_from) ~ ':' ~ (onu.moved_from_interface or '') %}
+                <tr class="{% if onu.optical_power is none %}table-danger{% else %}table-success{% endif %}
+                         {% if onu.is_moved_to %}table-warning border-warning border-2{% elif onu.is_moved_from %}table-info border-info border-2{% endif %}
+                         {% if onu.is_configured and onu.optical_power is none and not onu.is_moved_to and not onu.is_moved_from %}table-secondary{% endif %}
+                         {% if onu.is_mcd %}table-mcd{% endif %}"
+                    {% if onu.is_moved_to %}title="{{ moved_to_title }}"{% elif onu.is_moved_from %}title="{{ moved_from_title }}"{% endif %}
+                    {% if onu.is_configured and onu.optical_power is none and not onu.is_moved_to and not onu.is_moved_from %}title="ONU прописана на OLT, но не активна"{% endif %}
+                    {% if onu.is_mcd %}title="🏢 МКД-ONU (многоквартирный дом)"{% endif %}>
+				<td class="text-center">
+					<div class="d-flex gap-1 justify-content-center flex-wrap">
+						{% if onu.is_mcd %}
+							<span class="badge bg-warning text-dark" title="🏢 МКД-ONU"><i class="bi bi-buildings"></i></span>
+						{% endif %}
+						{% if onu.is_moved_to %}
+							<span class="badge bg-warning text-dark" title="{{ moved_to_title }}"><i class="bi bi-arrow-right"></i></span>
+						{% elif onu.is_moved_from %}
+							<span class="badge bg-info" title="{{ moved_from_title }}"><i class="bi bi-arrow-left"></i></span>
+						{% elif onu.optical_power is not none %}
+							<span class="badge bg-success" title="Активная ONU"><i class="bi bi-check-circle"></i></span>
+						{% elif onu.is_configured %}
+							<span class="badge bg-secondary" title="Прописана, но не активна"><i class="bi bi-pencil-square"></i></span>
+						{% else %}
+							<span class="badge bg-danger" title="Неактивная ONU"><i class="bi bi-x-circle"></i></span>
+						{% endif %}
+					</div>
+				</td>
+                    <td>
+                        {% if ':' in onu.interface %}
+                            {{ onu.interface.split(':')[1] }}
+                        {% else %}
+                            {{ onu.interface }}
+                        {% endif %}
+                    </td>
+                    <td><code class="font-monospace">{{ onu.mac }}</code></td>
+                    <td class="text-truncate" style="max-width: 180px;" title="{{ onu.description }}">
+                        {% if onu.is_mcd %}<strong>{{ onu.description }}</strong>{% else %}{{ onu.description }}{% endif %}
+                    </td>
+                    <td>
+                        {% if onu.contract %}
+                            <span class="badge bg-success" title="{{ onu.contract }}">
+                                {{ onu.contract[:12] }}{% if onu.contract|length > 12 %}...{% endif %}
+                            </span>
+                        {% else %}
+                            <span class="badge bg-secondary">—</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ onu.vendor|truncate(10) if onu.vendor else '—' }}</td>
+                    <td>{{ onu.model|truncate(10) if onu.model else '—' }}</td>
+                    <td>
+                        <span class="badge {% if onu.optical_power is not none %}bg-success{% elif onu.is_moved_to %}bg-warning text-dark{% elif onu.is_moved_from %}bg-info{% else %}bg-danger{% endif %}">
+                            {{ onu.status|truncate(8) if onu.status else '—' }}
+                        </span>
+                    </td>
+                    <td>
+                        {% if onu.optical_power is not none %}
+                            <span class="badge {% if onu.optical_power > -25 %}bg-success{% elif onu.optical_power >= -27 %}bg-warning text-dark{% else %}bg-danger{% endif %}">
+                                {{ "%.2f"|format(onu.optical_power) }} dBm
+                            </span>
+                        {% else %}
+                            <span class="badge bg-secondary">—</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if onu.dereg_reason and onu.dereg_reason != 'N/A' %}
+                            <span class="badge bg-warning text-dark">{{ onu.dereg_reason|truncate(15) }}</span>
+                        {% else %}
+                            <span class="badge bg-light text-dark">—</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span class="badge bg-info">{{ onu.client_macs|length }}</span>
+                    </td>
+                    <td>
+                        {% if onu.optical_power is none %}
+                            <small class="text-danger" title="Не на связи с {{ onu.last_seen if onu.last_seen else '—' }}">
+                                <i class="bi bi-clock-history"></i>
+                                {{ onu.last_seen if onu.last_seen else '—' }}
+                            </small>
+                        {% else %}
+                            <small class="text-muted">—</small>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="d-flex gap-1">
+                            <a href="{{ url_for('onu_detail', device_id=device_id, interface=onu.interface) }}"
+                               class="btn btn-sm btn-outline-primary py-0 px-1" title="Детализация">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                            <button onclick="refreshONU('{{ device_id | jsattr }}', '{{ onu.interface | jsattr }}')"
+                                    class="btn btn-sm btn-outline-success py-0 px-1" title="Сканировать терминал">
+                                <i class="bi bi-arrow-repeat"></i>
+                            </button>
+                            {% if role == 'admin' and onu.is_moved_to %}
+                            <button onclick="cleanupMovedONU('{{ device_id | jsattr }}', '{{ onu.interface | jsattr }}')"
+                                    class="btn btn-sm btn-outline-warning py-0 px-1"
+                                    title="Удалить со старого OLT (ONU уехала на {{ onu.moved_to_device_name or onu.moved_to }})">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="alert alert-info">
+    <h6 class="alert-heading"><i class="bi bi-search"></i> Объекты не обнаружены</h6>
+    <p class="mb-0">Не найдено терминалов, соответствующих выбранным фильтрам.</p>
+</div>
+{% endfor %}
+
+<div class="text-center mt-3">
+    <a href="{{ url_for('index') }}" class="btn btn-secondary btn-sm"><i class="bi bi-arrow-left"></i> Назад к списку устройств</a>
+</div>
+
+<div class="modal fade" id="onuListModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header py-2" id="onuListModalHeader">
+                <h5 class="modal-title mb-0">
+                    <i class="bi bi-list-ul"></i>
+                    <span id="onuListModalTitle">Список ONU</span>
+                    <span class="badge bg-light text-dark ms-2" id="onuListModalCount">0</span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-3">
+                <div class="d-flex gap-2 mb-3">
+                    <button type="button" class="btn btn-success btn-sm" id="onuListExportBtn" onclick="exportOnuList()">
+                        <i class="bi bi-file-excel"></i> Экспорт в Excel
+                    </button>
+                </div>
+                <div id="onuListModalContent">
+                    <div class="text-center py-4">
+                        <div class="spinner-border spinner-border-sm text-primary"></div>
+                        <p class="mt-2 small text-muted">Загрузка...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer py-2">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// | tojson безопасно сериализует значение в JS-литерал (защита от JS-инъекций)
+const CURRENT_DEVICE_ID = {{ device_id | tojson }};
+let deviceProgressInterval = null;
+let deviceProgressStep = 0;
+let deviceProgressMax = 100;
+let currentOnuListType = 'all';
+let currentOnuListDevice = CURRENT_DEVICE_ID;
+
+const FILTER_TITLES = {
+    'all': 'Все терминалы устройства',
+    'active': 'Подключенные терминалы',
+    'inactive': 'Отключенные терминалы',
+    'good_signal': '🟢 Терминалы с хорошим сигналом',
+    'warning_signal': '🟡 Терминалы с предупреждением',
+    'bad_signal': '🔴 Терминалы с плохим сигналом',
+    'single': 'Одиночные терминалы',
+    'mcd': '🏢 МКД-ONU устройства'
+};
+
+const FILTER_HEADER_COLORS = {
+    'all': 'bg-primary text-white',
+    'active': 'bg-success text-white',
+    'inactive': 'bg-danger text-white',
+    'good_signal': 'bg-info text-white',
+    'warning_signal': 'bg-warning text-dark',
+    'bad_signal': 'bg-danger text-white',
+    'single': 'bg-secondary text-white',
+    'mcd': 'bg-warning text-dark'
+};
+
+function showOnuListModal(filterType, deviceId, event) {
+    if (event) event.preventDefault();
+    currentOnuListType = filterType;
+    currentOnuListDevice = deviceId;
+    const modal = new bootstrap.Modal(document.getElementById('onuListModal'));
+    const header = document.getElementById('onuListModalHeader');
+    header.className = 'modal-header py-2 ' + (FILTER_HEADER_COLORS[filterType] || 'bg-primary text-white');
+    document.getElementById('onuListModalTitle').textContent = FILTER_TITLES[filterType] || 'Список ONU';
+    document.getElementById('onuListModalCount').textContent = '0';
+    document.getElementById('onuListModalContent').innerHTML = `
+        <div class="text-center py-4">
+            <div class="spinner-border spinner-border-sm text-primary"></div>
+            <p class="mt-2 small text-muted">Загрузка списка...</p>
+        </div>`;
+    modal.show();
+    // filterType — ключ из белого списка вызывающего кода, deviceId — числовой ID из БД;
+    // encodeURIComponent для защиты от инъекции в URL (defense-in-depth).
+    const url = deviceId
+        ? `/api/onu_list?type=${encodeURIComponent(filterType)}&device=${encodeURIComponent(deviceId)}`
+        : `/api/onu_list?type=${encodeURIComponent(filterType)}`;
+    fetch(url)
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'success' && data.onus && data.onus.length > 0) {
+                document.getElementById('onuListModalCount').textContent = data.total_count;
+                let html = `<div class="alert alert-info small py-2 mb-2">
+                    <i class="bi bi-info-circle"></i> Найдено <strong>${data.total_count}</strong> ONU
+                </div>`;
+                html += `<div class="table-responsive"><table class="table table-sm table-hover table-striped mb-0 small">
+                    <thead class="table-light"><tr>
+                        <th>Устройство</th><th>Интерфейс</th><th>MAC</th>
+                        <th>Описание</th><th>Статус</th><th>Сигнал</th>
+                        <th>Переезд</th><th>Действия</th>
+                    </tr></thead><tbody>`;
+                data.onus.forEach(onu => {
+                    const esc = window.escapeHtml;
+                    let moveBadge = '';
+                    if (onu.is_moved_to) {
+                        const n = onu.moved_to_device_name || onu.moved_to || '';
+                        const id = onu.moved_to_device_id || '';
+                        const iface = onu.moved_to_interface || '';
+                        moveBadge = id
+                            ? `<a href="/device/${encodeURIComponent(id)}" class="badge bg-warning text-dark text-decoration-none" title="Перейти на устройство ${esc(n)}">🟡 → ${esc(n)}:${esc(iface)}</a>`
+                            : `<span class="badge bg-warning text-dark" title="Уехала на ${esc(n)}">🟡 → ${esc(n)}:${esc(iface)}</span>`;
+                    } else if (onu.is_moved_from) {
+                        const n = onu.moved_from_device_name || onu.moved_from || '';
+                        const id = onu.moved_from_device_id || '';
+                        const iface = onu.moved_from_interface || '';
+                        moveBadge = id
+                            ? `<a href="/device/${encodeURIComponent(id)}" class="badge bg-info text-decoration-none" title="Перейти на устройство ${esc(n)}">🔵 ← ${esc(n)}:${esc(iface)}</a>`
+                            : `<span class="badge bg-info" title="Приехала с ${esc(n)}">🔵 ← ${esc(n)}:${esc(iface)}</span>`;
+                    }
+                    // колонка «Переезд» — через опцию moveCell единой разметки
+                    const moveCell = moveBadge || '<small class="text-muted">\u2014</small>';
+                    html += window.onuRowHtml(onu, { rowClassMode: 'full', moveCell: moveCell });
+                });
+                html += `</tbody></table></div>`;
+                document.getElementById('onuListModalContent').innerHTML = html;
+            } else {
+                document.getElementById('onuListModalContent').innerHTML = `
+                    <div class="alert alert-info text-center small">
+                        <i class="bi bi-info-circle"></i> ONU не найдены
+                    </div>`;
+            }
+        })
+        .catch(err => {
+            document.getElementById('onuListModalContent').innerHTML = `
+                <div class="alert alert-danger small">
+                    <i class="bi bi-x-circle"></i> Ошибка загрузки: ${escapeHtml(err)}
+                </div>`;
+        });
+}
+
+function exportOnuList() {
+    const url = currentOnuListDevice
+        ? `/api/export/onu_list?type=${encodeURIComponent(currentOnuListType)}&device=${encodeURIComponent(currentOnuListDevice)}`
+        : `/api/export/onu_list?type=${encodeURIComponent(currentOnuListType)}`;
+    window.location.href = url;
+}
+
+// Делегирование кликов по счётчикам: данные берутся из data-* атрибутов,
+// инлайновый onclick с Jinja-подстановкой не используется (защита от JS-инъекций).
+document.addEventListener('click', function (e) {
+    const el = e.target.closest('[data-onu-fn]');
+    if (!el) return;
+    e.preventDefault();
+    if (el.dataset.onuFn === 'showOnuListModal') {
+        showOnuListModal(el.dataset.onuKind, el.dataset.onuDevice, e);
+    } else if (el.dataset.onuFn === 'showMovedOnusModal') {
+        showMovedOnusModal(el.dataset.onuDevice, e);
+    }
+});
+
+function showMovedOnusModal(deviceId, event) {
+    if (event) event.preventDefault();
+    currentOnuListType = 'moved';
+    currentOnuListDevice = deviceId;
+    const modal = new bootstrap.Modal(document.getElementById('onuListModal'));
+    const header = document.getElementById('onuListModalHeader');
+    header.className = 'modal-header py-2 bg-warning text-dark';
+    document.getElementById('onuListModalTitle').textContent = 'Переехавшие ONU';
+    document.getElementById('onuListModalCount').textContent = '0';
+    document.getElementById('onuListModalContent').innerHTML = `
+        <div class="text-center py-4">
+            <div class="spinner-border spinner-border-sm text-warning"></div>
+            <p class="mt-2 small text-muted">Загрузка...</p>
+        </div>`;
+    modal.show();
+    const url = deviceId
+        ? `/api/device_moved_onus/${encodeURIComponent(deviceId)}`
+        : '/api/moved_onus';
+    fetch(url)
+        .then(r => r.json())
+        .then(data => {
+            if (data.moved_onus && data.moved_onus.length > 0) {
+                document.getElementById('onuListModalCount').textContent = data.total_count;
+                let html = `<div class="table-responsive"><table class="table table-sm table-hover table-striped mb-0 small">
+                    <thead class="table-light"><tr>
+                        <th>Тип</th><th>Устройство</th><th>Интерфейс</th><th>MAC</th>
+                        <th>Описание</th><th>Переезд</th><th>Время</th><th>Действия</th>
+                    </tr></thead><tbody>`;
+                data.moved_onus.forEach(onu => {
+                    let typeBadge, moveInfo, rowClass;
+                    if (onu.is_moved_to) {
+                        typeBadge = '<span class="badge bg-warning text-dark">🟡 УЕХАЛА</span>';
+                        const targetName = onu.moved_to_device_name || onu.moved_to;
+                        const targetDeviceId = onu.moved_to_device_id || '';
+                        const targetIface = onu.moved_to_interface || '';
+                        moveInfo = targetDeviceId
+                            ? `<small>→ <a href="/device/${encodeURIComponent(targetDeviceId)}" class="text-decoration-none"><code>${escapeHtml(targetName)}:${escapeHtml(targetIface)}</code></a></small>`
+                            : `<small>→ <code>${escapeHtml(targetName)}:${escapeHtml(targetIface)}</code></small>`;
+                        rowClass = 'table-warning';
+                    } else if (onu.is_moved_from) {
+                        typeBadge = '<span class="badge bg-info">🔵 ПРИЕХАЛА</span>';
+                        const sourceName = onu.moved_from_device_name || onu.moved_from;
+                        const sourceDeviceId = onu.moved_from_device_id || '';
+                        const sourceIface = onu.moved_from_interface || '';
+                        moveInfo = sourceDeviceId
+                            ? `<small>← <a href="/device/${encodeURIComponent(sourceDeviceId)}" class="text-decoration-none"><code>${escapeHtml(sourceName)}:${escapeHtml(sourceIface)}</code></a></small>`
+                            : `<small>← <code>${escapeHtml(sourceName)}:${escapeHtml(sourceIface)}</code></small>`;
+                        rowClass = 'table-info';
+                    } else {
+                        typeBadge = '<span class="badge bg-secondary">НЕТ ДАННЫХ</span>';
+                        moveInfo = '<small class="text-muted">Нет данных о переезде</small>';
+                        rowClass = '';
+                    }
+                    html += `<tr class="${escapeHtml(rowClass)}">
+                        <td>${typeBadge}</td>
+                        <td>${escapeHtml(onu.device)}</td>
+                        <td><code>${escapeHtml(onu.interface)}</code></td>
+                        <td><code>${escapeHtml(onu.mac) || '—'}</code></td>
+                        <td>${escapeHtml(onu.description) || '—'}</td>
+                        <td>${moveInfo}</td>
+                        <td><small>${escapeHtml(onu.moved_at) || '—'}</small></td>
+                        <td>
+                            <a href="/onu/${encodeURIComponent(onu.device_id)}/${encodeURIComponent(onu.interface)}"
+                               class="btn btn-outline-primary btn-xs py-0 px-1">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                        </td>
+                    </tr>`;
+                });
+                html += `</tbody></table></div>`;
+                document.getElementById('onuListModalContent').innerHTML = html;
+            } else {
+                document.getElementById('onuListModalContent').innerHTML = `
+                    <div class="alert alert-info text-center small">
+                        <i class="bi bi-info-circle"></i> Переехавших ONU не найдено
+                    </div>`;
+            }
+        })
+        .catch(err => {
+            document.getElementById('onuListModalContent').innerHTML = `
+                <div class="alert alert-danger small">
+                    <i class="bi bi-x-circle"></i> Ошибка: ${escapeHtml(err)}
+                </div>`;
+        });
+}
+
+function showDeviceProgress() {
+    document.getElementById('device-scan-progress').style.display = 'block';
+    deviceProgressStep = 0;
+    startDeviceProgressAnimation();
+}
+
+function hideDeviceProgress() {
+    document.getElementById('device-scan-progress').style.display = 'none';
+    if (deviceProgressInterval) {
+        clearInterval(deviceProgressInterval);
+        deviceProgressInterval = null;
+    }
+    deviceProgressStep = 0;
+}
+
+function startDeviceProgressAnimation() {
+    if (deviceProgressInterval) clearInterval(deviceProgressInterval);
+    deviceProgressInterval = setInterval(() => {
+        deviceProgressStep += 1;
+        const progressPercent = Math.min(deviceProgressStep, 90);
+        const progressBar = document.getElementById('device-progress-bar');
+        const progressPercentElement = document.getElementById('device-progress-percent');
+        const progressText = document.getElementById('device-progress-text');
+        progressBar.style.width = progressPercent + '%';
+        progressPercentElement.textContent = progressPercent + '%';
+        if (progressPercent < 30) progressText.textContent = 'Подключение к устройству...';
+        else if (progressPercent < 60) progressText.textContent = 'Сбор данных с устройства...';
+        else progressText.textContent = 'Обработка полученных данных...';
+        if (deviceProgressStep >= deviceProgressMax) clearInterval(deviceProgressInterval);
+    }, 500);
+}
+
+function completeDeviceProgress() {
+    if (deviceProgressInterval) clearInterval(deviceProgressInterval);
+    const progressBar = document.getElementById('device-progress-bar');
+    const progressPercentElement = document.getElementById('device-progress-percent');
+    const progressText = document.getElementById('device-progress-text');
+    const scanStatus = document.getElementById('device-scan-status');
+    progressBar.style.width = '100%';
+    progressPercentElement.textContent = '100%';
+    progressText.textContent = 'Сканирование завершено!';
+    scanStatus.textContent = 'Завершено';
+    scanStatus.className = 'badge bg-success';
+    setTimeout(() => { hideDeviceProgress(); }, 2000);
+}
+
+function refreshDevice() {
+    if (confirm('Сканировать узел сети? Это может занять несколько минут.')) {
+        showNotification('Сканирование узла...', 'info');
+        showDeviceProgress();
+        fetch(`/api/refresh?device=${CURRENT_DEVICE_ID}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    completeDeviceProgress();
+                    updateDeviceStats(data);
+                    showNotification('Узел синхронизирован', 'success');
+                    setTimeout(() => { window.location.reload(); }, 2000);
+                } else {
+                    hideDeviceProgress();
+                    showNotification('Ошибка сканирования', 'danger');
+                }
+            })
+            .catch(error => {
+                hideDeviceProgress();
+                showNotification('Ошибка сети', 'danger');
+            });
+    }
+}
+
+function refreshONU(deviceId, interface) {
+    if (confirm('Сканировать этот терминал?')) {
+        const button = event.target.closest('button');
+        const originalHtml = button.innerHTML;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
+        button.disabled = true;
+        fetch(`/api/refresh_onu?device=${encodeURIComponent(deviceId)}&interface=${encodeURIComponent(interface)}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification('Терминал просканирован', 'success');
+                    setTimeout(() => { window.location.reload(); }, 1500);
+                } else {
+                    showNotification('Ошибка сканирования терминала: ' + (data.message || 'Неизвестная ошибка'), 'danger');
+                    button.innerHTML = originalHtml;
+                    button.disabled = false;
+                }
+            })
+            .catch(error => {
+                showNotification('Ошибка сети: ' + error, 'danger');
+                button.innerHTML = originalHtml;
+                button.disabled = false;
+            });
+    }
+}
+
+function cleanupMovedONU(deviceId, interface) {
+    if (confirm('Удалить эту ONU со старого OLT? Она останется на новом месте.')) {
+        showNotification('Удаление...', 'warning');
+        fetch('/api/cleanup_moved_onu', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device: deviceId, interface: interface })
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification(data.message, 'success');
+                    setTimeout(() => { window.location.reload(); }, 1500);
+                } else {
+                    showNotification('Ошибка: ' + data.message, 'danger');
+                }
+            })
+            .catch(error => { showNotification('Ошибка сети: ' + error, 'danger'); });
+    }
+}
+
+function showConfiguredButInactive() {
+    document.getElementById('status-filter').value = 'off-line';
+    document.getElementById('moved-filter').value = 'not_moved';
+    document.getElementById('signal-filter').value = 'no_signal';
+    document.forms[0].submit();
+}
+
+function updateDeviceStats(data) {
+    if (data.success) {
+        document.getElementById('device-total').textContent = data.onu_count;
+        document.getElementById('device-timestamp').textContent = data.timestamp;
+        const statusElement = document.getElementById('device-status');
+        if (statusElement) {
+            if (data.enriched) {
+                statusElement.innerHTML = 'Полные';
+                statusElement.className = 'badge bg-success';
+            } else {
+                statusElement.innerHTML = 'Базовые';
+                statusElement.className = 'badge bg-warning text-dark';
+            }
+        }
+    }
+}
+
+// showNotification и escapeHtml — единые реализации из static/js/common.js (base.html)
+
+setInterval(() => {
+    fetch(`/api/device_data/${CURRENT_DEVICE_ID}`)
+        .then(response => response.json())
+        .then(data => { if (data.success) updateDeviceStats(data); })
+        .catch(error => console.error('Ошибка обновления статуса:', error));
+}, 30000);
+
+setTimeout(() => {
+    fetch(`/api/device_data/${CURRENT_DEVICE_ID}`)
+        .then(response => response.json())
+        .then(data => { if (data.success) updateDeviceStats(data); })
+        .catch(error => console.error('Ошибка обновления статуса:', error));
+}, 5000);
+</script>
+
+<style>
+.table th { font-weight: 600; font-size: 11px; padding: 4px 6px; }
+.table td { vertical-align: middle; padding: 4px 6px; font-size: 11px; }
+.badge { font-size: 9px; padding: 2px 4px; }
+.card-header { font-weight: 600; font-size: 12px; }
+.btn-sm { padding: 2px 4px; font-size: 10px; }
+.small { font-size: 11px; }
+.text-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress { height: 6px; background-color: #e9ecef; }
+.progress-bar { transition: width 0.3s ease; }
+.font-monospace { font-family: 'Courier New', monospace; font-size: 10px; }
+.table-warning { background-color: #fff3cd !important; }
+.table-secondary { background-color: #e2e3e5 !important; }
+.table-info { background-color: #cff4fc !important; border-left: 3px solid #0dcaf0 !important; }
+.table-info:hover { background-color: #b6effb !important; }
+.table-mcd {
+    background-color: #fff8e1 !important;
+    border-left: 4px solid #ff9800 !important;
+}
+.table-mcd:hover { background-color: #ffecb3 !important; }
+.mcd-badge { animation: mcd-pulse 2s infinite; font-size: 10px; }
+@keyframes mcd-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+@media (min-width: 992px) { .col-lg { flex: 0 0 auto; width: 10%; } }
+@media (min-width: 768px) and (max-width: 991.98px) { .col-md-4 { flex: 0 0 auto; width: 33.333333%; } }
+@media (max-width: 767.98px) { .col-6 { flex: 0 0 auto; width: 50%; } }
+</style>
+{% endblock %}

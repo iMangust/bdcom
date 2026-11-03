@@ -1,0 +1,512 @@
+{% extends "base.html" %}
+{% block title %}Управление договорами{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitoring.css') }}">
+{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0"><i class="bi bi-file-earmark-text"></i> Управление договорами</h4>
+    <div>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary btn-sm"><i class="bi bi-arrow-left"></i> Назад к устройствам</a>
+    </div>
+</div>
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-info text-white py-2"><i class="bi bi-file-earmark-text"></i> Статистика договоров</div>
+            <div class="card-body py-2">
+                <div class="row text-center g-2 stats-tile" id="contract-stats">
+                    <div class="col-6 col-md-3">
+                        <div class="p-2 bg-light rounded border border-primary">
+                            <h5 class="text-primary mb-1" id="total-contracts">{{ contract_stats.total_contracts }}</h5>
+                            <small class="text-muted"><i class="bi bi-journal-text"></i> Всего договоров</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="p-2 bg-light rounded border border-success">
+                            <h5 class="text-success mb-1" id="contracts-with-onu">{{ contract_stats.contracts_with_onu }}</h5>
+                            <small class="text-muted"><i class="bi bi-link-45deg"></i> Договоров с ONU</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="p-2 bg-light rounded border border-info">
+                            <h5 class="text-info mb-1" id="onus-with-contract">{{ contract_stats.onus_with_contract }}</h5>
+                            <small class="text-muted"><i class="bi bi-ethernet"></i> ONU с договорами</small>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="p-2 bg-light rounded border border-warning">
+                            <h5 class="text-warning mb-1" id="coverage-percent">{{ contract_stats.coverage_percentage }}%</h5>
+                            <small class="text-muted"><i class="bi bi-graph-up"></i> Покрытие договорами</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% if role == 'admin' %}
+<div class="card mb-3">
+    <div class="card-header bg-primary text-white py-2">
+        <h6 class="mb-0"><i class="bi bi-upload"></i> Загрузка файла договоров</h6>
+    </div>
+    <div class="card-body py-2">
+        <div class="alert alert-info">
+            <h6 class="mb-2"><i class="bi bi-info-circle"></i> Формат файла договоров:</h6>
+            <p class="mb-2">Файл должен содержать следующие колонки (или похожие по названию):</p>
+            <ul class="mb-0">
+                <li><strong>Договор</strong> - номер договора (например: PPPOE-12345)</li>
+                <li><strong>MAC-адрес</strong> - MAC адрес клиента</li>
+                <li><strong>login</strong> - логин клиента (опционально)</li>
+                <li><strong>IP-адрес</strong> - IP адрес (опционально)</li>
+            </ul>
+        </div>
+        <form id="uploadForm" enctype="multipart/form-data">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label for="contractFile" class="form-label">Файл договоров (CSV):</label>
+                    <input class="form-control" type="file" id="contractFile" name="file"
+                           accept=".csv,.txt,.xlsx,.xls" required aria-describedby="fileHelp">
+                    <div id="fileHelp" class="form-text">Поддерживаются CSV, TXT, Excel файлы до 50MB</div>
+                </div>
+                <div class="col-md-4">
+                    <label for="delimiter" class="form-label">Разделитель:</label>
+                    <select class="form-select" id="delimiter" name="delimiter">
+                        <option value=";" selected>Точка с запятой (;)</option>
+                        <option value=",">Запятая (,)</option>
+                        <option value="\t">Табуляция</option>
+                    </select>
+                </div>
+                <div class="col-md-2 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary w-100" id="uploadBtn">
+                        <i class="bi bi-upload"></i> Загрузить
+                    </button>
+                </div>
+            </div>
+        </form>
+        <div id="uploadProgress" class="mt-3" style="display: none;">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <span>Загрузка и обработка файла...</span>
+                <span id="uploadPercent">0%</span>
+            </div>
+            <div class="progress">
+                <div id="uploadProgressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+                     role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+            </div>
+            <div id="uploadDetails" class="mt-2 small text-muted"></div>
+        </div>
+    </div>
+</div>
+{% endif %}
+<div class="card mb-3">
+    <div class="card-header bg-info text-white py-2">
+        <h6 class="mb-0"><i class="bi bi-gear"></i> Управление договорами</h6>
+    </div>
+    <div class="card-body py-2">
+        <div class="row g-3">
+            {% if role == 'admin' %}
+            <div class="col-md-4">
+                <button class="btn btn-success w-100" onclick="bindContracts()">
+                    <i class="bi bi-link"></i> Привязать договоры
+                </button>
+                <div class="form-text">Принудительная привязка договоров к ONU</div>
+            </div>
+            <div class="col-md-4">
+                <button class="btn btn-warning w-100" onclick="clearContracts()">
+                    <i class="bi bi-trash"></i> Очистить договоры
+                </button>
+                <div class="form-text">Удаление всех договоров из системы</div>
+            </div>
+            {% endif %}
+            <div class="col-md-4">
+                <button class="btn btn-outline-primary w-100" onclick="showOnusWithoutContract()">
+                    <i class="bi bi-search"></i> ONU без договоров
+                </button>
+                <div class="form-text">Поиск ONU без привязанных договоров</div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="card mb-3">
+    <div class="card-header bg-secondary text-white py-2">
+        <h6 class="mb-0"><i class="bi bi-search"></i> Поиск договоров</h6>
+    </div>
+    <div class="card-body py-2">
+        <div class="input-group mb-3">
+            <input type="text" class="form-control" id="contractSearch"
+                   placeholder="Поиск по номеру договора, MAC адресу, логину..."
+                   aria-label="Поиск договоров">
+            <button class="btn btn-primary" type="button" onclick="searchContracts()">
+                <i class="bi bi-search"></i> Искать
+            </button>
+            <button class="btn btn-secondary" type="button" onclick="clearSearch()">
+                <i class="bi bi-x-circle"></i> Сбросить
+            </button>
+        </div>
+        <div id="searchResults" class="mt-3"></div>
+    </div>
+</div>
+<div class="card">
+    <div class="card-header bg-light py-2">
+        <h6 class="mb-0"><i class="bi bi-graph-up"></i> Статистика системы</h6>
+    </div>
+    <div class="card-body py-2">
+        <div class="row">
+            <div class="col-md-6">
+                <h6 class="mb-2">Общая статистика:</h6>
+                <ul class="list-group list-group-flush">
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        Устройств в системе
+                        <span class="badge bg-primary rounded-pill">{{ global_stats.devices_total }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        ONU всего
+                        <span class="badge bg-primary rounded-pill">{{ global_stats.onus_total }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        ONU активных
+                        <span class="badge bg-success rounded-pill">{{ global_stats.active_onus }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        ONU неактивных
+                        <span class="badge bg-danger rounded-pill">{{ global_stats.inactive_onus }}</span>
+                    </li>
+                </ul>
+            </div>
+            <div class="col-md-6">
+                <h6 class="mb-2">Статистика договоров:</h6>
+                <ul class="list-group list-group-flush">
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        Договоров всего
+                        <span class="badge bg-info rounded-pill" id="stats-total-contracts">{{ contract_stats.total_contracts }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        ONU с договорами
+                        <span class="badge bg-success rounded-pill" id="stats-onus-with-contract">{{ contract_stats.onus_with_contract }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        Договоров с ONU
+                        <span class="badge bg-warning rounded-pill" id="stats-contracts-with-onu">{{ contract_stats.contracts_with_onu }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        Покрытие договорами
+                        <span class="badge bg-primary rounded-pill" id="stats-coverage">{{ contract_stats.coverage_percentage }}%</span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+    document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const fileInput = document.getElementById('contractFile');
+        const delimiter = document.getElementById('delimiter').value;
+        const uploadBtn = document.getElementById('uploadBtn');
+        if (!fileInput.files.length) {
+            showNotification('Выберите файл для загрузки', 'warning');
+            return;
+        }
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('delimiter', delimiter);
+        const progressDiv = document.getElementById('uploadProgress');
+        const progressBar = document.getElementById('uploadProgressBar');
+        const progressPercent = document.getElementById('uploadPercent');
+        const uploadDetails = document.getElementById('uploadDetails');
+        progressDiv.style.display = 'block';
+        uploadBtn.disabled = true;
+        let progress = 0;
+        const progressInterval = setInterval(() => {
+            progress += 1;
+            if (progress <= 90) {
+                progressBar.style.width = progress + '%';
+                progressPercent.textContent = progress + '%';
+            }
+        }, 100);
+        try {
+            const response = await fetch('/api/contracts/upload', {
+                method: 'POST',
+                body: formData
+            });
+            clearInterval(progressInterval);
+            const data = await response.json();
+            if (data.status === 'success') {
+                progressBar.style.width = '100%';
+                progressPercent.textContent = '100%';
+                progressBar.className = 'progress-bar progress-bar-striped bg-success';
+                if (data.result) {
+                    const result = data.result;
+                    uploadDetails.innerHTML = `
+                        <div class="alert alert-success">
+                            <h6><i class="bi bi-check-circle"></i> Успешно загружено!</h6>
+                            <p class="mb-1">Всего строк: ${result.total_rows}</p>
+                            <p class="mb-1">Сохранено договоров: ${result.saved_contracts}</p>
+                            <p class="mb-1">Пропущено строк: ${result.skipped_rows}</p>
+                            <p class="mb-0">Уникальных MAC: ${result.unique_macs}</p>
+                        </div>
+                    `;
+                }
+                showNotification(data.message, 'success');
+                setTimeout(() => {
+                    updateContractStats();
+                    searchContracts();
+                }, 1000);
+                setTimeout(() => {
+                    progressDiv.style.display = 'none';
+                    uploadBtn.disabled = false;
+                    progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated';
+                    progressBar.style.width = '0%';
+                    progressPercent.textContent = '0%';
+                    uploadDetails.innerHTML = '';
+                }, 5000);
+            } else {
+                progressBar.className = 'progress-bar progress-bar-striped bg-danger';
+                showNotification(data.message, 'danger');
+                setTimeout(() => {
+                    progressDiv.style.display = 'none';
+                    uploadBtn.disabled = false;
+                    progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated';
+                    progressBar.style.width = '0%';
+                    progressPercent.textContent = '0%';
+                    uploadDetails.innerHTML = '';
+                }, 3000);
+            }
+        } catch (error) {
+            clearInterval(progressInterval);
+            progressBar.className = 'progress-bar progress-bar-striped bg-danger';
+            showNotification('Ошибка сети: ' + error, 'danger');
+            setTimeout(() => {
+                progressDiv.style.display = 'none';
+                uploadBtn.disabled = false;
+                progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated';
+                progressBar.style.width = '0%';
+                progressPercent.textContent = '0%';
+                uploadDetails.innerHTML = '';
+            }, 3000);
+        }
+    });
+    function searchContracts() {
+        const searchQuery = document.getElementById('contractSearch').value;
+        const resultsDiv = document.getElementById('searchResults');
+        resultsDiv.innerHTML = `
+            <div class="text-center py-4">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Загрузка...</span>
+                </div>
+                <p class="mt-2">Поиск договоров...</p>
+            </div>
+        `;
+        fetch(`/api/contracts/search?q=${encodeURIComponent(searchQuery)}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.contracts && data.contracts.length > 0) {
+                    let html = `
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i> Найдено ${data.contracts.length} договоров
+                        </div>
+                    `;
+                    data.contracts.forEach(contract => {
+                        const hasOnus = contract.onus && contract.onus.length > 0;
+                        html += `
+                            <div class="card mb-3">
+                                <div class="card-header ${hasOnus ? 'bg-success text-white' : 'bg-light'}">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <h6 class="mb-0">
+                                            <i class="bi bi-file-earmark-text"></i>
+                                            ${escapeHtml(contract.contract_number)}
+                                            ${hasOnus ? `<span class="badge bg-light text-success ms-2">${contract.onu_count} ONU</span>` : ''}
+                                        </h6>
+                                        <small>${escapeHtml(contract.uploaded_at)}</small>
+                                    </div>
+                                </div>
+                                <div class="card-body py-2">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <p class="mb-1"><strong>MAC:</strong> <code>${escapeHtml(contract.mac_address)}</code></p>
+                                            ${contract.login ? `<p class="mb-1"><strong>Логин:</strong> ${escapeHtml(contract.login)}</p>` : ''}
+                                            ${contract.ip_address ? `<p class="mb-1"><strong>IP:</strong> ${escapeHtml(contract.ip_address)}</p>` : ''}
+                                        </div>
+                                        <div class="col-md-6">
+                                            ${hasOnus ? `
+                                                <p class="mb-1"><strong>Привязанные ONU:</strong></p>
+                                                <div class="list-group">
+                                                    ${contract.onus.map(onu => `
+                                                        <a href="/onu/${encodeURIComponent(onu.device)}/${encodeURIComponent(onu.interface)}" class="list-group-item list-group-item-action">
+                                                            <div class="d-flex w-100 justify-content-between">
+                                                                <h6 class="mb-1">${escapeHtml(onu.device)} - ${escapeHtml(onu.interface)}</h6>
+                                                                <small>${escapeHtml(onu.description)}</small>
+                                                            </div>
+                                                            <p class="mb-1">
+                                                                Статус: <span class="badge ${onu.status === 'active' ? 'bg-success' : 'bg-danger'}">${escapeHtml(onu.status)}</span>
+                                                                ${(onu.optical_power !== null && onu.optical_power !== undefined && !Number.isNaN(parseFloat(onu.optical_power))) ? `Сигнал: <span class="badge bg-info">${parseFloat(onu.optical_power).toFixed(2)} dBm</span>` : ''}
+                                                            </p>
+                                                        </a>
+                                                    `).join('')}
+                                                </div>
+                                            ` : `
+                                                <div class="alert alert-warning">
+                                                    <i class="bi bi-exclamation-triangle"></i>
+                                                    Нет привязанных ONU
+                                                </div>
+                                            `}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    resultsDiv.innerHTML = html;
+                } else {
+                    resultsDiv.innerHTML = `
+                        <div class="alert alert-warning">
+                            <i class="bi bi-exclamation-triangle"></i>
+                            Договоры не найдены
+                        </div>
+                    `;
+                }
+            })
+            .catch(error => {
+                resultsDiv.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-x-circle"></i>
+                        Ошибка поиска: ${escapeHtml(error)}
+                    </div>
+                `;
+            });
+    }
+    function clearSearch() {
+        document.getElementById('contractSearch').value = '';
+        document.getElementById('searchResults').innerHTML = '';
+    }
+    function bindContracts() {
+        if (confirm('Выполнить принудительную привязку договоров к ONU?')) {
+            showNotification('Привязка договоров...', 'info');
+            fetch('/api/contracts/bind', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showNotification(data.message, 'success');
+                        updateContractStats();
+                    } else {
+                        showNotification(data.message, 'danger');
+                    }
+                })
+                .catch(error => {
+                    showNotification('Ошибка сети: ' + error, 'danger');
+                });
+        }
+    }
+    function clearContracts() {
+        if (confirm('Вы уверены, что хотите удалить все договоры? Это действие нельзя отменить.')) {
+            showNotification('Очистка договоров...', 'warning');
+            fetch('/api/contracts/clear', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showNotification(data.message, 'success');
+                        updateContractStats();
+                        clearSearch();
+                    } else {
+                        showNotification(data.message, 'danger');
+                    }
+                })
+                .catch(error => {
+                    showNotification('Ошибка сети: ' + error, 'danger');
+                });
+        }
+    }
+    function showOnusWithoutContract() {
+        const resultsDiv = document.getElementById('searchResults');
+        resultsDiv.innerHTML = `
+            <div class="text-center py-4">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Загрузка...</span>
+                </div>
+                <p class="mt-2">Поиск ONU без договоров...</p>
+            </div>
+        `;
+        fetch('/api/onus_without_contract')
+            .then(response => response.json())
+            .then(data => {
+                if (data.onus_without_contract && data.onus_without_contract.length > 0) {
+                    let html = `
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i> Найдено ${data.onus_without_contract.length} ONU без договоров
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>Устройство</th>
+                                        <th>Интерфейс</th>
+                                        <th>MAC</th>
+                                        <th>Описание</th>
+                                        <th>Статус</th>
+                                        <th>Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                    `;
+                    data.onus_without_contract.forEach(onu => {
+                        html += `
+                            <tr>
+                                <td>${escapeHtml(onu.device)}</td>
+                                <td><code>${escapeHtml(onu.interface)}</code></td>
+                                <td><code>${escapeHtml(onu.mac)}</code></td>
+                                <td>${escapeHtml(onu.description) || '—'}</td>
+                                <td>
+                                    <span class="badge ${onu.status === 'active' ? 'bg-success' : 'bg-danger'}">${escapeHtml(onu.status)}</span>
+                                </td>
+                                <td>
+                                    <a href="/onu/${encodeURIComponent(onu.device)}/${encodeURIComponent(onu.interface)}" class="btn btn-sm btn-outline-primary">
+                                        <i class="bi bi-eye"></i>
+                                    </a>
+                                    <a href="/device/${encodeURIComponent(onu.device)}" class="btn btn-sm btn-outline-secondary">
+                                        <i class="bi bi-cpu"></i>
+                                    </a>
+                                </td>
+                            </tr>
+                        `;
+                    });
+                    html += `</tbody></table></div>`;
+                    resultsDiv.innerHTML = html;
+                } else {
+                    resultsDiv.innerHTML = `
+                        <div class="alert alert-success">
+                            <i class="bi bi-check-circle"></i>
+                            Все ONU имеют привязанные договоры!
+                        </div>
+                    `;
+                }
+            })
+            .catch(error => {
+                resultsDiv.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-x-circle"></i>
+                        Ошибка поиска: ${escapeHtml(error)}
+                    </div>
+                `;
+            });
+    }
+    function updateContractStats() {
+        fetch('/api/contracts/stats')
+            .then(response => response.json())
+            .then(stats => {
+                document.getElementById('total-contracts').textContent = stats.total_contracts;
+                document.getElementById('contracts-with-onu').textContent = stats.contracts_with_onu;
+                document.getElementById('onus-with-contract').textContent = stats.onus_with_contract;
+                document.getElementById('coverage-percent').textContent = stats.coverage_percentage + '%';
+                document.getElementById('stats-total-contracts').textContent = stats.total_contracts;
+                document.getElementById('stats-onus-with-contract').textContent = stats.onus_with_contract;
+                document.getElementById('stats-contracts-with-onu').textContent = stats.contracts_with_onu;
+                document.getElementById('stats-coverage').textContent = stats.coverage_percentage + '%';
+            })
+            .catch(error => console.error('Ошибка обновления статистики:', error));
+    }
+    setInterval(() => {
+        updateContractStats();
+    }, 30000);
+    updateContractStats();
+</script>
+{% endblock %}

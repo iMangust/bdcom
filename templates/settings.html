@@ -1,0 +1,508 @@
+{% extends "base.html" %}
+{% block title %}Настройки системы{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monitoring.css') }}">
+{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0"><i class="bi bi-gear"></i> Настройки системы</h4>
+    <div>
+        <a href="{{ url_for('telegram_settings') }}" class="btn btn-outline-info btn-sm"><i class="bi bi-telegram"></i> Telegram Bot</a>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary btn-sm"><i class="bi bi-arrow-left"></i> Назад к устройствам</a>
+    </div>
+</div>
+<div class="row">
+    <div class="col-md-6">
+        <div class="card mb-3">
+            <div class="card-header bg-primary text-white py-2">
+                <h6 class="mb-0"><i class="bi bi-clock"></i> Настройки обновления</h6>
+            </div>
+            <div class="card-body py-2">
+                <form id="updateSettingsForm">
+                    <div class="mb-3">
+                        <label for="stats_update_interval" class="form-label">
+                            Интервал обновления статистики (секунды)
+                        </label>
+                        <input type="number" class="form-control" id="stats_update_interval"
+                               value="{{ UPDATE_CONFIG.stats_update_interval }}" min="10" max="3600">
+                        <div class="form-text">Как часто обновлять статистику на страницах</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="device_cache_timeout" class="form-label">
+                            Таймаут кэша устройств (секунды)
+                        </label>
+                        <input type="number" class="form-control" id="device_cache_timeout"
+                               value="{{ UPDATE_CONFIG.device_cache_timeout }}" min="60" max="86400">
+                        <div class="form-text">Как долго хранить данные устройств в кэше</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="background_update_interval" class="form-label">
+                            Интервал фонового обновления (секунды)
+                        </label>
+                        <input type="number" class="form-control" id="background_update_interval"
+                               value="{{ UPDATE_CONFIG.background_update_interval }}" min="60" max="3600">
+                        <div class="form-text">Как часто обновлять данные в фоне</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="contract_auto_bind_interval" class="form-label">
+                            Интервал привязки договоров (секунды)
+                        </label>
+                        <input type="number" class="form-control" id="contract_auto_bind_interval"
+                               value="{{ UPDATE_CONFIG.contract_auto_bind_interval }}" min="0" max="86400">
+                        <div class="form-text">0 = отключить авто-привязку</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="onu_change_check_interval" class="form-label">
+                            Интервал проверки изменений ONU (секунды)
+                        </label>
+                        <input type="number" class="form-control" id="onu_change_check_interval"
+                               value="{{ UPDATE_CONFIG.onu_change_check_interval }}" min="0" max="86400">
+                        <div class="form-text">0 = отключить проверку</div>
+                    </div>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Сохранить настройки</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% if role == 'admin' %}
+    <div class="col-md-6">
+        <div class="card mb-3 border-warning">
+            <div class="card-header bg-warning text-dark py-2">
+                <h6 class="mb-0"><i class="bi bi-router"></i> Управление списком BDCOM (OLT)</h6>
+            </div>
+                <div class="card-body py-2">
+                    <p class="small text-muted mb-3">
+                        <i class="bi bi-info-circle"></i>
+                        Удаление BDCOM полностью стирает все связанные данные из системы: ONU, MAC-адреса
+                        клиентов, привязки договоров, историю переездов и изменений, уведомления и статус
+                        устройства. ONU, переехавшие с удаляемого BDCOM на другой живой OLT, после удаления
+                        будут считаться стоявшими там всегда.
+                    </p>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover align-middle" id="devicesTable">
+                            <thead>
+                                <tr>
+                                    <th>ID</th><th>Название</th><th>Hostname</th>
+                                    <th>Модель</th><th>ONU в БД</th><th class="text-end">Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr><td colspan="6" class="text-muted">Загрузка...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="loadDevicesList()">
+                        <i class="bi bi-arrow-clockwise"></i> Обновить список
+                    </button>
+
+                    <hr class="my-4">
+
+                    <h6 class="mb-3"><i class="bi bi-plus-circle text-success"></i> Добавить новый BDCOM в мониторинг</h6>
+                    <p class="small text-muted mb-3">
+                        Устройство будет сохранено в <code>devices_overrides.json</code> (единственный источник
+                        списка BDCOM) и автоматически добавлено в фоновый опрос. ID назначается автоматически
+                        (текущий максимум + 1). Перед добавлением выполняется проверка доступности по SSH —
+                        при недоступности устройства добавление отменяется.
+                    </p>
+                    <form id="addDeviceForm" class="row g-2">
+                        <div class="col-md-2">
+                            <label class="form-label small">ID (авто)</label>
+                            <input type="text" class="form-control form-control-sm" id="add_dev_id"
+                                   placeholder="авто" title="Оставьте пустым — система подберёт свободный ID">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Название *</label>
+                            <input type="text" class="form-control form-control-sm" id="add_dev_name"
+                                   placeholder="P3310D_ГОРОД_3" required maxlength="50">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">IP / hostname *</label>
+                            <input type="text" class="form-control form-control-sm" id="add_dev_hostname"
+                                   placeholder="172.20.2.100" required pattern="^[\d.]+$">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Модель</label>
+                            <select class="form-select form-select-sm" id="add_dev_model">
+                                <option value="3310">3310 (EPON)</option>
+                                <option value="GP3600">GP3600 (GPON)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">Описание</label>
+                            <input type="text" class="form-control form-control-sm" id="add_dev_description"
+                                   placeholder="BDCOM_GOROD_3" maxlength="100">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Логин</label>
+                            <input type="text" class="form-control form-control-sm" id="add_dev_username"
+                                   value="admin">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Пароль</label>
+                            <input type="password" class="form-control form-control-sm" id="add_dev_password"
+                                   placeholder="пусто = общий из .env">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">Enable-пароль</label>
+                            <input type="password" class="form-control form-control-sm" id="add_dev_enable"
+                                   placeholder="пусто = общий из .env">
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end gap-3">
+                            <div class="form-check mt-1">
+                                <input class="form-check-input" type="checkbox" id="add_dev_test" checked>
+                                <label class="form-check-label small" for="add_dev_test">Проверять связь</label>
+                            </div>
+                            <div class="form-check mt-1">
+                                <input class="form-check-input" type="checkbox" id="add_dev_now" checked>
+                                <label class="form-check-label small" for="add_dev_now">Опросить сразу</label>
+                            </div>
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end">
+                            <button type="submit" class="btn btn-success btn-sm w-100" id="addDeviceBtn">
+                                <i class="bi bi-plus-lg"></i> Добавить устройство
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+    </div>
+    {% endif %}
+    <div class="col-md-6">
+        <div class="card mb-3">
+            <div class="card-header bg-success text-white py-2">
+                <h6 class="mb-0"><i class="bi bi-cloud-arrow-down"></i> Настройки бэкапа</h6>
+            </div>
+            <div class="card-body py-2">
+                <form id="backupSettingsForm">
+                    <div class="mb-3">
+                        <label for="backup_times" class="form-label">
+                            Время выполнения бэкапов (через запятую)
+                        </label>
+                        <input type="text" class="form-control" id="backup_times"
+                               value="{{ BACKUP_CONFIG.backup_times|join(', ') }}">
+                        <div class="form-text">Формат: HH:MM, HH:MM (например: 15:35, 19:30)</div>
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="config_backup_enabled"
+                               {% if BACKUP_CONFIG.config_backup_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="config_backup_enabled">
+                            Бэкап конфигураций устройств
+                        </label>
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="data_backup_enabled"
+                               {% if BACKUP_CONFIG.data_backup_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="data_backup_enabled">
+                            Бэкап данных ONU
+                        </label>
+                    </div>
+                    <div class="mb-3">
+                        <label for="max_backup_files" class="form-label">
+                            Максимальное количество файлов бэкапа
+                        </label>
+                        <input type="number" class="form-control" id="max_backup_files"
+                               value="{{ BACKUP_CONFIG.max_backup_files }}" min="1" max="10000">
+                    </div>
+                    <div class="mb-3">
+                        <label for="backup_directory" class="form-label">
+                            Директория для бэкапов
+                        </label>
+                        <input type="text" class="form-control" id="backup_directory"
+                               value="{{ BACKUP_CONFIG.backup_directory }}">
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="remove_empty_lines"
+                               {% if BACKUP_CONFIG.remove_empty_lines %}checked{% endif %}>
+                        <label class="form-check-label" for="remove_empty_lines">
+                            Удалять пустые строки при бэкапе
+                        </label>
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="fix_indentation"
+                               {% if BACKUP_CONFIG.fix_indentation %}checked{% endif %}>
+                        <label class="form-check-label" for="fix_indentation">
+                            Исправлять отступы при бэкапе
+                        </label>
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="complete_backup"
+                               {% if BACKUP_CONFIG.complete_backup %}checked{% endif %}>
+                        <label class="form-check-label" for="complete_backup">
+                            Гарантировать полный бэкап
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-success"><i class="bi bi-save"></i> Сохранить настройки бэкапа</button>
+                </form>
+            </div>
+        </div>
+        <div class="card mb-3">
+            <div class="card-header bg-info text-white py-2">
+                <h6 class="mb-0"><i class="bi bi-info-circle"></i> Информация о системе</h6>
+            </div>
+            <div class="card-body py-2">
+                <ul class="list-group list-group-flush">
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span>Версия приложения</span>
+                        <span class="badge bg-primary">2.0.0</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span>Количество устройств</span>
+                        <span class="badge bg-success">{{ DEVICES|length }}</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between">
+                        <span>Режим работы</span>
+                        <span class="badge bg-warning">Production</span>
+                    </li>
+                    <li class="list-group-item">
+                        <small class="text-muted">
+                            <i class="bi bi-calendar"></i>
+                            Последнее обновление: <span id="last-update-time">—</span>
+                        </small>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        {% if role == 'admin' %}
+        <div class="card mb-3 border-danger">
+            <div class="card-header bg-danger text-white py-2">
+                <h6 class="mb-0"><i class="bi bi-trash"></i> Очистка кэша</h6>
+            </div>
+            <div class="card-body py-2">
+                <p class="small mb-3">
+                    <i class="bi bi-info-circle"></i>
+                    Очистка кэша принудительно обновит все данные устройств из базы данных.
+                    Используйте, если данные на сайте не соответствуют реальным.
+                </p>
+                <button type="button" class="btn btn-danger" onclick="clearAllCache()">
+                    <i class="bi bi-trash"></i> Очистить весь кэш
+                </button>
+                <button type="button" class="btn btn-outline-warning ms-2" onclick="clearDevicesCache()">
+                    <i class="bi bi-arrow-repeat"></i> Обновить данные устройств
+                </button>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+<script>
+    document.getElementById('last-update-time').textContent = new Date().toLocaleString('ru-RU');
+
+    document.getElementById('updateSettingsForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const settings = {
+            stats_update_interval: parseInt(document.getElementById('stats_update_interval').value),
+            device_cache_timeout: parseInt(document.getElementById('device_cache_timeout').value),
+            background_update_interval: parseInt(document.getElementById('background_update_interval').value),
+            contract_auto_bind_interval: parseInt(document.getElementById('contract_auto_bind_interval').value),
+            onu_change_check_interval: parseInt(document.getElementById('onu_change_check_interval').value)
+        };
+        fetch('/api/settings/update', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(settings)
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification('Настройки обновления сохранены', 'success');
+                } else {
+                    showNotification('Ошибка: ' + data.message, 'danger');
+                }
+            })
+            .catch(error => {
+                showNotification('Ошибка сети: ' + error, 'danger');
+            });
+    });
+
+    document.getElementById('backupSettingsForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const backupTimes = document.getElementById('backup_times').value
+            .split(',')
+            .map(time => time.trim())
+            .filter(time => time !== '');
+        const settings = {
+            backup_times: backupTimes,
+            config_backup_enabled: document.getElementById('config_backup_enabled').checked,
+            data_backup_enabled: document.getElementById('data_backup_enabled').checked,
+            max_backup_files: parseInt(document.getElementById('max_backup_files').value),
+            backup_directory: document.getElementById('backup_directory').value,
+            remove_empty_lines: document.getElementById('remove_empty_lines').checked,
+            fix_indentation: document.getElementById('fix_indentation').checked,
+            complete_backup: document.getElementById('complete_backup').checked
+        };
+        fetch('/api/settings/update', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(settings)
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification('Настройки бэкапа сохранены', 'success');
+                } else {
+                    showNotification('Ошибка: ' + data.message, 'danger');
+                }
+            })
+            .catch(error => {
+                showNotification('Ошибка сети: ' + error, 'danger');
+            });
+    });
+
+    // showNotification и escapeHtml — единые реализации из static/js/common.js (base.html)
+
+    function clearAllCache() {
+        if (!confirm('Очистить весь кэш приложения?')) return;
+        showNotification('Очистка кэша...', 'info');
+        fetch('/api/clear_cache')
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification('Кэш очищен. Перезагрузка страницы...', 'success');
+                    setTimeout(() => window.location.reload(), 1000);
+                } else {
+                    showNotification('Ошибка: ' + data.message, 'danger');
+                }
+            })
+            .catch(err => showNotification('Ошибка сети: ' + err, 'danger'));
+    }
+
+    function clearDevicesCache() {
+        if (!confirm('Обновить данные всех устройств?')) return;
+        showNotification('Обновление данных...', 'info');
+        fetch('/api/start_update/all')
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification('Обновление запущено в фоне', 'success');
+                } else {
+                    showNotification('Ошибка: ' + data.message, 'danger');
+                }
+            })
+            .catch(err => showNotification('Ошибка сети: ' + err, 'danger'));
+    }
+
+    // escapeHtml определён один раз в base.html (экранирует & < > " ')
+
+    function loadDevicesList() {
+        const tbody = document.querySelector('#devicesTable tbody');
+        if (!tbody) return;
+        fetch('/api/devices/list')
+            .then(r => r.json())
+            .then(data => {
+                if (data.status !== 'success') {
+                    tbody.innerHTML = `<tr><td colspan="6" class="text-danger">${escapeHtml(data.message || 'Ошибка загрузки')}</td></tr>`;
+                    return;
+                }
+                if (!data.devices || data.devices.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="text-muted">Устройств нет</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.devices.map(d => `
+                    <tr>
+                        <td>${escapeHtml(d.id)}</td>
+                        <td>${escapeHtml(d.name)}</td>
+                        <td><code>${escapeHtml(d.hostname)}</code></td>
+                        <td>${escapeHtml(d.model)}</td>
+                        <td><span class="badge bg-secondary">${d.onu_count}</span></td>
+                        <td class="text-end">
+                            <button class="btn btn-outline-danger btn-sm"
+                                    onclick="deleteDevice('${jsAttr(d.id)}', '${jsAttr(d.name)}', ${Number(d.onu_count) || 0})">
+                                <i class="bi bi-trash"></i> Удалить
+                            </button>
+                        </td>
+                    </tr>`).join('');
+            })
+            .catch(err => {
+                tbody.innerHTML = `<tr><td colspan="6" class="text-danger">Ошибка сети: ${escapeHtml(err)}</td></tr>`;
+            });
+    }
+
+    function deleteDevice(id, name, onuCount) {
+        const warning = onuCount > 0
+            ? `⚠️ В базе ${onuCount} ONU(ей) этого устройства — они будут удалены вместе со всей историей переездов, MAC-адресами и договорами.`
+            : 'Данных ONU в базе по этому устройству не найдено.';
+        if (!confirm(`Удалить BDCOM "${name}" (ID ${id}) ИЗ СИСТЕМЫ ПОЛНОСТЬЮ?\n\n` +
+                    warning + '\n\nДействие необратимо!')) return;
+        showNotification(`Удаляю BDCOM ${name}...`, 'info');
+        fetch('/api/devices/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({device_id: id})
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification(data.message, 'success');
+                    loadDevicesList();
+                } else {
+                    let msg = data.message || 'Ошибка удаления';
+                    if (data.steps && data.steps.length) {
+                        msg += ' — ' + data.steps.map(s => `${s.text} [${s.status}]`).join(', ');
+                    }
+                    // Единый UX: без блокирующего alert(), подробности — в toast-уведомлении
+                    showNotification('Ошибка: ' + msg, 'danger');
+                }
+            })
+            .catch(err => showNotification('Ошибка сети: ' + err, 'danger'));
+    }
+
+    function addDevice(event) {
+        event.preventDefault();
+        const payload = {
+            id: document.getElementById('add_dev_id').value.trim(),
+            name: document.getElementById('add_dev_name').value.trim(),
+            hostname: document.getElementById('add_dev_hostname').value.trim(),
+            model: document.getElementById('add_dev_model').value,
+            description: document.getElementById('add_dev_description').value.trim(),
+            username: document.getElementById('add_dev_username').value.trim() || 'admin',
+            password: document.getElementById('add_dev_password').value,
+            enable_password: document.getElementById('add_dev_enable').value,
+            test_connection: document.getElementById('add_dev_test').checked,
+            immediate_update: document.getElementById('add_dev_now').checked
+        };
+        if (!payload.name || !payload.hostname) {
+            showNotification('Заполните название и IP устройства', 'warning');
+            return;
+        }
+        const btn = document.getElementById('addDeviceBtn');
+        const btnHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Проверяю связь и добавляю...';
+        fetch('/api/devices/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showNotification(data.message, 'success');
+                    document.getElementById('addDeviceForm').reset();
+                    document.getElementById('add_dev_username').value = 'admin';
+                    document.getElementById('add_dev_test').checked = true;
+                    document.getElementById('add_dev_now').checked = true;
+                    loadDevicesList();
+                } else {
+                    showNotification('Ошибка: ' + (data.message || 'не удалось добавить устройство'), 'danger');
+                }
+            })
+            .catch(err => showNotification('Ошибка сети: ' + err, 'danger'))
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerHTML = btnHtml;
+            });
+    }
+
+    {% if role == 'admin' %}
+    document.addEventListener('DOMContentLoaded', () => {
+        loadDevicesList();
+        const form = document.getElementById('addDeviceForm');
+        if (form) form.addEventListener('submit', addDevice);
+    });
+    {% endif %}
+</script>
+{% endblock %}
