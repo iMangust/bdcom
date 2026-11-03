@@ -8,7 +8,7 @@ import chardet
 import pandas as pd
 from sqlalchemy import (
 create_engine, Column, Integer, String, Float, DateTime, Text,
-Boolean, Index, BigInteger, func, distinct
+Boolean, Index, BigInteger, func, distinct, case, and_
 )
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
@@ -304,6 +304,30 @@ Index('idx_contract_mac', 'contract_number', 'mac_address'),
 Index('idx_full_search', 'contract_number', 'mac_address', 'login'),
 {'mysql_engine': 'InnoDB', 'mysql_charset': 'utf8mb4'}
 )
+
+class ONUState(Base):
+    """Исторический снимок состояния ONU при каждом успешном опросе OLT.
+
+    Таблица является источником временных рядов для страницы «Статистика»:
+    уровень оптического сигнала, онлайн-статус, причина отключения.
+    Одна строка на ONU (device_id+interface) на один цикл опроса.
+    """
+    __tablename__ = 'onu_state'
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    device_id = Column(String(10), nullable=False, index=True)
+    interface = Column(String(50), nullable=False, index=True)
+    mac = Column(String(50))
+    is_online = Column(Boolean, default=False, nullable=False)
+    optical_power = Column(Float, nullable=True)
+    status = Column(String(20))
+    dereg_reason = Column(String(50))
+    recorded_at = Column(DateTime, default=now_local, nullable=False, index=True)
+    __table_args__ = (
+        Index('idx_onu_state_lookup', 'device_id', 'interface', 'recorded_at'),
+        Index('idx_onu_state_time', 'recorded_at'),
+        {'mysql_engine': 'InnoDB', 'mysql_charset': 'utf8mb4'}
+    )
+
 
 class TelegramNotification(Base):
     __tablename__ = 'telegram_notifications'
@@ -772,6 +796,10 @@ session, onu.id, device_id, interface, onu.mac, 'unconfigured',
 details=f"ONU удалена из конфигурации OLT {device_name} (не найдена в выводе)"
 )
 
+        # Временной ряд для страницы «Статистика»: снимок состояния каждой ONU
+        # на текущий цикл опроса (сигнал, онлайн/офлайн, причина отключения).
+        record_onu_state_samples(session, device_id, onu_info)
+
         session.commit()
 
         if new_onus:
@@ -816,6 +844,438 @@ details=details, created_at=now_local()
         session.add(history)
     except Exception as e:
         logger.error(f"Error creating ONU history: {e}")
+
+
+# ===================== Временные ряды (страница «Статистика») =====================
+
+SIGNAL_BINS = [
+    # (метка, нижняя граница включительно или None, верхняя граница не включительно)
+    ('до -20', None, -20.0),
+    ('-20…-24', -20.0, -25.0),
+    ('-25…-27', -25.0, -27.0),
+    ('от -27', -27.0, None),
+]
+
+
+def _signal_bin_label(power):
+    """Определяет диапазон сигнала для гистограммы (по порогам get_optical_status)."""
+    if power is None:
+        return None
+    for label, lo, hi in SIGNAL_BINS:
+        if lo is not None and power < lo:
+            continue
+        if hi is not None and power >= hi:
+            continue
+        return label
+    return 'от -27'
+
+
+def record_onu_state_samples(session, device_id, onu_info):
+    """Пишет снимки состояния ONU в onu_state (временной ряд для статистики).
+
+    Вызывается из save_onu_data после обработки всего списка ONU одного
+    устройства. Ошибку записи ряда считаем некритичной: мониторинг текущего
+    состояния не должен падать из-за истории.
+    """
+    try:
+        ts = now_local()
+        rows = []
+        seen = set()
+        for onu_data in onu_info:
+            interface = onu_data.get('interface')
+            if not interface or interface in seen:
+                continue
+            seen.add(interface)
+            power = onu_data.get('optical_power')
+            rows.append(ONUState(
+                device_id=device_id,
+                interface=interface,
+                mac=(onu_data.get('mac') or '')[:50],
+                is_online=power is not None,
+                optical_power=power,
+                status=(onu_data.get('status') or 'N/A')[:20],
+                dereg_reason=(onu_data.get('dereg_reason') or 'N/A')[:50],
+                recorded_at=ts,
+            ))
+        if rows:
+            session.bulk_save_objects(rows)
+    except Exception as e:
+        logger.error(f"Error recording ONU state samples for {device_id}: {e}")
+
+
+def get_signal_trend_series(session, device_id=None, days=7, max_onus=8):
+    """Временной ряд среднего/минимального уровня сигнала по устройствам.
+
+    Возвращает series: [{name, points: [[ts_iso, avg], ...]}, ...] — по одному
+    ряду на OLT (или один общий ряд при device_id) + ряд худшего сигнала.
+    Группировка по часам выполняется на Python (диалект-независимо).
+    """
+    try:
+        since = now_local() - datetime.timedelta(days=days)
+        rows = session.query(
+            ONUState.device_id, ONUState.recorded_at,
+            ONUState.optical_power
+        ).filter(ONUState.recorded_at >= since, ONUState.optical_power.isnot(None)) \
+         .order_by(ONUState.device_id, ONUState.recorded_at).limit(200000).all()
+
+        by_device = {}   # did -> bucket -> [sum, n, min]
+        worst = {}       # bucket -> min
+        for did, ts, power in rows:
+            if ts is None or power is None:
+                continue
+            bucket = ts.strftime('%Y-%m-%d %H:00')
+            acc = by_device.setdefault(did, {}).setdefault(bucket, [0.0, 0, float('inf')])
+            acc[0] += float(power)
+            acc[1] += 1
+            acc[2] = min(acc[2], float(power))
+            prev = worst.get(bucket)
+            if prev is None or float(power) < prev:
+                worst[bucket] = round(float(power), 2)
+
+        series = []
+        for did in sorted(by_device)[:max_onus]:
+            pts = [[b, round(v[0] / v[1], 2)] for b, v in sorted(by_device[did].items())]
+            series.append({'name': f'{get_device_name_by_id(did)} (средний)', 'points': pts})
+        if len(by_device) > 1 and worst:
+            series.append({'name': 'Худший сигнал в сети (min)',
+                           'points': [[b, worst[b]] for b in sorted(worst)]})
+        return {'series': series, 'days': days}
+    except Exception as e:
+        logger.error(f"Error building signal trend series: {e}", exc_info=True)
+        return {'series': [], 'days': days, 'error': INTERNAL_ERROR_MSG}
+
+
+def get_availability_stats(session, days=7):
+    """Аптайм по каждому устройству и суммарно за период (по снимкам onu_state).
+
+    Точка данных = успешный опрос OLT; online_ratio = доля снимков с сигналом.
+    """
+    try:
+        since = now_local() - datetime.timedelta(days=days)
+        rows = session.query(
+            ONUState.device_id,
+            func.count(ONUState.id),
+            func.sum(case((ONUState.is_online.is_(True), 1), else_=0)),
+        ).filter(ONUState.recorded_at >= since).group_by(ONUState.device_id).all()
+
+        devices = []
+        tot_samples = tot_online = 0
+        for did, total, online in rows:
+            total = int(total or 0)
+            online = int(online or 0)
+            tot_samples += total
+            tot_online += online
+            devices.append({
+                'device_id': did,
+                'device': get_device_name_by_id(did),
+                'samples': total,
+                'online_samples': online,
+                'uptime_pct': round(online / total * 100, 2) if total else None,
+            })
+        devices.sort(key=lambda d: (d['uptime_pct'] is None, d['uptime_pct']))
+        return {
+            'days': days,
+            'devices': devices,
+            'overall_uptime_pct': round(tot_online / tot_samples * 100, 2) if tot_samples else None,
+            'total_samples': tot_samples,
+        }
+    except Exception as e:
+        logger.error(f"Error computing availability stats: {e}", exc_info=True)
+        return {'days': days, 'devices': [], 'overall_uptime_pct': None, 'total_samples': 0,
+                'error': INTERNAL_ERROR_MSG}
+
+
+def get_daily_availability(session, days=14):
+    """Ежедневный аптайм сети (%) и количество онлайн-ONU по дням.
+
+    Группировка по датам выполняется на Python — диалект-независимо
+    (MySQL/SQLite), по аналогии с get_signal_trend_series.
+    """
+    try:
+        since = (now_local() - datetime.timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = session.query(
+            ONUState.recorded_at, ONUState.is_online
+        ).filter(ONUState.recorded_at >= since).limit(500000).all()
+
+        by_day = {}  # day -> [total, online]
+        for ts, online in rows:
+            if ts is None:
+                continue
+            day = ts.strftime('%Y-%m-%d')
+            acc = by_day.setdefault(day, [0, 0])
+            acc[0] += 1
+            if online:
+                acc[1] += 1
+
+        labels, uptimes, online_counts = [], [], []
+        for day in sorted(by_day):
+            total, online = by_day[day]
+            labels.append(day)
+            uptimes.append(round(online / total * 100, 2) if total else None)
+            online_counts.append(online)
+        return {'labels': labels, 'uptime': uptimes, 'online': online_counts}
+    except Exception as e:
+        logger.error(f"Error computing daily availability: {e}", exc_info=True)
+        return {'labels': [], 'uptime': [], 'online': [], 'error': INTERNAL_ERROR_MSG}
+
+
+def get_outage_events(session, days=7, limit=300):
+    """Последние события изменений состояния ONU (из onu_history).
+
+    ДЕЙСТВУЮЩИЕ обрывы: последняя запись по ONU — down/unconfigured/marked_moved.
+    ЗАКРЫТЫЕ: down-событие, после которого есть up-событие (считается длительность).
+    """
+    try:
+        since = now_local() - datetime.timedelta(days=days)
+        ev_down = ('down', 'unconfigured', 'marked_moved')
+        ev_up = ('up', 'created', 'moved_to', 'restored')
+
+        rows = session.query(
+            ONUHistory.device_id, ONUHistory.interface, ONUHistory.action,
+            ONUHistory.details, ONUHistory.created_at,
+        ).filter(ONUIHistory.created_at >= since).order_by(
+            ONUHistory.device_id, ONUHistory.interface, ONUHistory.created_at
+        ).limit(100000).all()
+
+        last_action = {}
+        open_pairs = set()
+        events = []
+        for did, iface, action, details, created in rows:
+            key = (did, iface)
+            prev_action, prev_time = last_action.get(key, (None, None))
+            if action in ev_down and prev_action not in ev_down:
+                # начало нового интервала недоступности (up -> down)
+                open_pairs.add(key)
+            elif action in ev_up and key in open_pairs:
+                # конец интервала: считаем длительность обрыва
+                open_pairs.discard(key)
+                events.append({
+                    'device_id': did, 'device': get_device_name_by_id(did),
+                    'interface': iface,
+                    'started_at': prev_time.strftime('%Y-%m-%d %H:%M') if prev_time else None,
+                    'ended_at': created.strftime('%Y-%m-%d %H:%M') if created else None,
+                    'duration_min': int((created - prev_time).total_seconds() // 60) if (prev_time and created) else None,
+                    'state': 'closed', 'details': details, 'action': action,
+                })
+            last_action[key] = (action, created)
+
+        now_ts = now_local()
+        open_events = []
+        for (did, iface), (action, created) in last_action.items():
+            if (did, iface) in open_pairs:
+                open_events.append({
+                    'device_id': did, 'device': get_device_name_by_id(did),
+                    'interface': iface,
+                    'started_at': created.strftime('%Y-%m-%d %H:%M') if created else None,
+                    'ended_at': None,
+                    'duration_min': int((now_ts - created).total_seconds() // 60) if created else None,
+                    'state': 'open', 'details': None, 'action': action,
+                })
+
+        all_events = open_events + events
+        all_events.sort(key=lambda ev: ev['started_at'] or '', reverse=True)
+        return {'events': all_events[:limit],
+                'open_count': len(open_events),
+                'closed_count': len(events),
+                'days': days}
+    except Exception as e:
+        logger.error(f"Error computing outage events: {e}", exc_info=True)
+        return {'events': [], 'open_count': 0, 'closed_count': 0, 'days': days,
+                'error': INTERNAL_ERROR_MSG}
+
+
+def get_degraded_onus(session, delta_threshold=3.0, days=7, min_current=-24.0, limit=200):
+    """ONU с признаками деградации сигнала.
+
+    Сигнал «упал» более чем на delta_threshold dB по сравнению с первым
+    замером окна и при этом текущий уровень хуже min_current — кандидат на
+    профилактику (грязная муфта, перегиб провода, старый передатчик).
+    """
+    try:
+        since = now_local() - datetime.timedelta(days=days)
+
+        # Первый и последний замер сигнала каждой ONU за окно — группировка на
+        # Python (диалект-независимо), как в get_signal_trend_series.
+        rows = session.query(
+            ONUState.device_id, ONUState.interface,
+            ONUState.recorded_at, ONUState.optical_power
+        ).filter(ONUState.recorded_at >= since, ONUState.optical_power.isnot(None)) \
+         .order_by(ONUState.device_id, ONUState.interface, ONUState.recorded_at) \
+         .limit(500000).all()
+
+        first_map, last_map = {}, {}
+        for did, iface, ts, power in rows:
+            key = (did, iface)
+            if key not in first_map and power is not None:
+                first_map[key] = float(power)
+            if power is not None:
+                last_map[key] = float(power)
+
+        cur = session.query(ONU).with_entities(
+            ONU.device_id, ONU.interface, ONU.device_name, ONU.mac,
+            ONU.description, ONU.contract, ONU.optical_power
+        ).filter(ONU.optical_power.isnot(None), ONU.is_configured.is_(True)).all()
+
+        results = []
+        for did, iface, dname, mac, desc, contract, power in cur:
+            first_power = first_map.get((did, iface))
+            if first_power is None or power is None:
+                continue
+            delta = float(first_power) - float(power)  # > 0 => сигнал ухудшился
+            if delta >= delta_threshold and float(power) <= min_current:
+                results.append({
+                    'device_id': did, 'device': dname or get_device_name_by_id(did),
+                    'interface': iface, 'mac': mac,
+                    'description': desc if desc and desc != 'N/A' else None,
+                    'contract': contract,
+                    'current_power': round(float(power), 2),
+                    'first_power': round(float(first_power), 2),
+                    'delta_db': round(delta, 2),
+                    'optical_status': get_optical_status(power),
+                })
+        results.sort(key=lambda r: r['delta_db'], reverse=True)
+        return {'onus': results[:limit], 'total_count': len(results),
+                'threshold_db': delta_threshold, 'days': days}
+    except Exception as e:
+        logger.error(f"Error computing degraded ONUs: {e}", exc_info=True)
+        return {'onus': [], 'total_count': 0, 'days': days, 'error': INTERNAL_ERROR_MSG}
+
+
+def get_signal_histogram(session, device_id=None):
+    """Распределение уровней сигнала активных ONU по диапазонам (бинам)."""
+    try:
+        base = [(ONU.is_active.is_(True)) | (ONU.is_configured.is_(True))]
+        if device_id:
+            base.insert(0, ONU.device_id == device_id)
+        good = session.query(func.count(ONU.id)).filter(*base, ONU.optical_power > -25).scalar() or 0
+        warn = session.query(func.count(ONU.id)).filter(*base, ONU.optical_power <= -25,
+                                                        ONU.optical_power >= -27).scalar() or 0
+        bad = session.query(func.count(ONU.id)).filter(*base, ONU.optical_power < -27).scalar() or 0
+        off = session.query(func.count(ONU.id)).filter(*base, ONU.optical_power.is_(None)).scalar() or 0
+        return {'good': good, 'warning': warn, 'bad': bad, 'offline': off}
+    except Exception as e:
+        logger.error(f"Error computing signal histogram: {e}", exc_info=True)
+        return {'good': 0, 'warning': 0, 'bad': 0, 'offline': 0, 'error': INTERNAL_ERROR_MSG}
+
+
+def get_onu_state_history(session, device_id, interface, days=30, limit=5000):
+    """Ряд состояния одной ONU (для графика на странице детали ONU)."""
+    try:
+        since = now_local() - datetime.timedelta(days=days)
+        rows = session.query(
+            ONUState.recorded_at, ONUState.optical_power, ONUState.is_online,
+            ONUState.status, ONUState.dereg_reason
+        ).filter(ONUState.device_id == device_id, ONUState.interface == interface,
+                 ONUState.recorded_at >= since).order_by(ONUState.recorded_at).limit(limit).all()
+        return {
+            'points': [[r[0].strftime('%Y-%m-%d %H:%M'), r[1], bool(r[2]), r[3], r[4]] for r in rows],
+            'device_id': device_id, 'interface': interface, 'days': days,
+        }
+    except Exception as e:
+        logger.error(f"Error getting ONU state history: {e}", exc_info=True)
+        return {'points': [], 'error': INTERNAL_ERROR_MSG}
+
+
+def get_top_worst_onus(session, limit=15):
+    """Таблица худших по сигналу активных ONU (для страницы статистики)."""
+    try:
+        onus = session.query(ONU).filter(
+            ONU.optical_power.isnot(None),
+            (ONU.is_active.is_(True)) | (ONU.is_configured.is_(True))
+        ).order_by(ONU.optical_power.asc()).limit(limit).all()
+        cmap = get_contracts_map_for_onus(session, [(o.device_id, o.interface) for o in onus])
+        out = []
+        for o in onus:
+            out.append(_onu_row_dict(o, cmap))
+        return {'onus': out}
+    except Exception as e:
+        logger.error(f"Error getting worst ONUs: {e}", exc_info=True)
+        return {'onus': [], 'error': INTERNAL_ERROR_MSG}
+
+
+def get_history_actions_summary(session, days=30):
+    """Количество событий onu_history по типам действий за период."""
+    try:
+        since = now_local() - datetime.timedelta(days=days)
+        rows = session.query(ONUIHistory.action, func.count(ONUIHistory.id)) \
+            .filter(ONUIHistory.created_at >= since) \
+            .group_by(ONUIHistory.action).all()
+        return {'actions': [{'action': a, 'count': int(c)} for a, c in rows], 'days': days}
+    except Exception as e:
+        logger.error(f"Error summarizing history actions: {e}", exc_info=True)
+        return {'actions': [], 'days': days, 'error': INTERNAL_ERROR_MSG}
+
+
+def _onu_row_dict(onu, contracts_map=None):
+    """Единый формат строки ONU для всех списков/выпадающих панелей UI.
+
+    Обязательные поля: device_id, device, interface, mac, description, status,
+    dereg_reason, optical_power, optical_status, contract (+login/ip из
+    справочника договоров), vendor/model, client_macs_count, флаги МКД/переезда,
+    last_seen. Все списки ONU в приложении строятся через эту функцию, чтобы
+    везде выводилась одинаковая полная информация о клиенте.
+    """
+    key = (onu.device_id, onu.interface)
+    contract = None
+    if contracts_map:
+        contract = contracts_map.get(key)
+    if not contract:
+        contract = onu.contract if onu.contract and onu.contract != 'N/A' else None
+    moved_to_device_id, moved_to_iface, moved_to_device_name = parse_moved_location(onu.moved_to)
+    moved_from_device_id, moved_from_iface, moved_from_device_name = parse_moved_location(onu.moved_from)
+    return {
+        'device_id': onu.device_id,
+        'device': onu.device_name,
+        'interface': onu.interface,
+        'mac': onu.mac,
+        'description': onu.description if onu.description and onu.description != 'N/A' else None,
+        'contract': contract,
+        'status': onu.status,
+        'dereg_reason': onu.dereg_reason,
+        'optical_power': onu.optical_power,
+        'optical_status': get_optical_status(onu.optical_power),
+        'vendor': onu.vendor, 'model': onu.model,
+        'client_macs_count': onu.client_macs_count,
+        'is_active': onu.is_active, 'is_configured': onu.is_configured,
+        'is_mcd': is_mcd(onu.description),
+        'is_moved': onu.moved_to is not None or onu.moved_from is not None,
+        'is_moved_to': onu.moved_to is not None,
+        'is_moved_from': onu.moved_from is not None,
+        'moved_to': onu.moved_to, 'moved_from': onu.moved_from,
+        'moved_at': onu.moved_at.strftime('%Y-%m-%d %H:%M:%S') if onu.moved_at else None,
+        'moved_to_device_id': moved_to_device_id,
+        'moved_to_device_name': moved_to_device_name,
+        'moved_to_interface': moved_to_iface,
+        'moved_from_device_id': moved_from_device_id,
+        'moved_from_device_name': moved_from_device_name,
+        'moved_from_interface': moved_from_iface,
+        'last_seen': onu.last_seen.strftime('%Y-%m-%d %H:%M:%S') if onu.last_seen else None,
+    }
+
+
+def enrich_rows_with_contract_details(session, rows):
+    """Дополняет строки ONU данными договора (логин/IP) из справочника contracts."""
+    numbers = {str(r['contract']).split(',')[0].strip() for r in rows if r.get('contract')}
+    numbers.discard('')
+    if not numbers:
+        return rows
+    info = {}
+    try:
+        crows = session.query(Contract.contract_number, Contract.login,
+                              Contract.ip_address, Contract.additional_info) \
+            .filter(Contract.contract_number.in_(list(numbers))).distinct().limit(5000).all()
+        for cn, login, ip, addinfo in crows:
+            if cn and cn not in info:
+                info[cn] = {'login': login, 'ip': ip, 'additional_info': addinfo}
+    except Exception as e:
+        logger.error(f"Error enriching contract details: {e}")
+    for r in rows:
+        cn = str(r['contract']).split(',')[0].strip() if r.get('contract') else None
+        d = info.get(cn) if cn else None
+        r['contract_login'] = (d or {}).get('login')
+        r['contract_ip'] = (d or {}).get('ip')
+    return rows
+
 
 def create_new_onu_safe(session, device_id, device_name, onu_data, normalized_mac=None, moved_from=None):
     try:
@@ -2086,39 +2546,10 @@ ONU.description.like(mcd_like_pattern(), escape=LIKE_ESCAPE)
 
         onus = query.order_by(ONU.device_name, ONU.interface).limit(limit).all()
 
-        results = []
-        for onu in onus:
-            moved_to_device_id, moved_to_iface, moved_to_device_name = parse_moved_location(onu.moved_to)
-            moved_from_device_id, moved_from_iface, moved_from_device_name = parse_moved_location(onu.moved_from)
-
-            results.append({
-'device_id': onu.device_id,
-'device': onu.device_name,
-'interface': onu.interface,
-'mac': onu.mac,
-'description': onu.description if onu.description and onu.description != 'N/A' else 'N/A',
-'contract': onu.contract,
-'status': onu.status,
-'dereg_reason': onu.dereg_reason,
-'optical_power': onu.optical_power,
-'optical_status': get_optical_status(onu.optical_power),
-'vendor': onu.vendor, 'model': onu.model,
-'client_macs_count': onu.client_macs_count,
-'is_active': onu.is_active, 'is_configured': onu.is_configured,
-'is_mcd': is_mcd(onu.description),
-'is_moved': onu.moved_to is not None or onu.moved_from is not None,
-'is_moved_to': onu.moved_to is not None,
-'is_moved_from': onu.moved_from is not None,
-'moved_to': onu.moved_to,
-'moved_from': onu.moved_from,
-'moved_to_device_id': moved_to_device_id,
-'moved_to_device_name': moved_to_device_name,
-'moved_to_interface': moved_to_iface,
-'moved_from_device_id': moved_from_device_id,
-'moved_from_device_name': moved_from_device_name,
-'moved_from_interface': moved_from_iface,
-'last_seen': onu.last_seen.strftime('%Y-%m-%d %H:%M:%S') if onu.last_seen else None,
-})
+        # Единый стандарт строки ONU + договор из справочника (как в поиске):
+        cmap = get_contracts_map_for_onus(session, [(o.device_id, o.interface) for o in onus])
+        results = [_onu_row_dict(o, cmap) for o in onus]
+        enrich_rows_with_contract_details(session, results)
 
         return {'onus': results, 'total_count': len(results), 'filter_type': filter_type}
     except Exception as e:
