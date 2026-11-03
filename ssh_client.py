@@ -393,27 +393,58 @@ max_loops=50,
             self.close()
         return synced_count
 
+    @staticmethod
+    def _is_error_reply(output: str) -> bool:
+        """Признаки отказа BDCOM/Cisco-подобного CLI на ответ команды.
+
+        Ответы вида '% Invalid input', '% Unknown command', '^' в маркере
+        позиции ошибки говорят о том, что команда НЕ выполнена. Пустой
+        ответ сюда не входит — его обрабатывает вызывающий код отдельно.
+        """
+        if not output:
+            return False
+        low = output.lower()
+        markers = ('% err', '% invalid', '% unknown', '% unrecogniz',
+                   'error:', 'invalid input', 'unknown command')
+        return any(m in low for m in markers)
+
     def delete_onu(self, interface: str) -> bool:
+        """Удаляет ONU с OLT по имени интерфейса вида 'GPON0/13:68' / 'EPON1/2:7'.
+
+        Возвращает True только если команда `no ... bind-onu seq N` реально
+        применена. Ответ OLT проверяется на маркеры ошибки ('%', 'error',
+        'invalid', 'unknown') — раньше True возвращался unconditional, и
+        UI считал ONU удалённой даже при отказе конфигурирования.
+        """
         logger.info(f"Deleting ONU {interface}")
+        # Валидация формата ДО подключения (защита от инъекций — см. INTERFACE_PARTS_RE)
+        match = INTERFACE_PARTS_RE.fullmatch((interface or '').strip())
+        if not match:
+            logger.error(f"Invalid interface format: {interface!r}")
+            return False
+        itype, slot, port, onu_num = match.groups()
+        iface_name = f'{itype}{slot}/{port}'
         if not self.connect():
             return False
         try:
-            match = INTERFACE_PARTS_RE.fullmatch(interface or '')
-            if not match:
-                logger.error(f"Invalid interface format: {interface}")
+            config_res = self._send_config('config', wait=2.0)
+            if self._is_error_reply(config_res):
+                logger.error(f"Failed to enter config mode for delete_onu({interface}): {config_res!r}")
                 return False
-            itype, slot, port, onu_num = match.groups()
-            self._send_config('config', wait=2.0)
-            result = self._send_config(f'interface {itype}{slot}/{port}', wait=1.5)
-            if not result:
-                logger.error(f"Failed to enter interface {itype}{slot}/{port}")
+            result = self._send_config(f'interface {iface_name}', wait=1.5)
+            if not result or self._is_error_reply(result):
+                logger.error(f"Failed to enter interface {iface_name}: {result!r}")
                 self._send_config('exit', wait=1.0)
                 return False
             cmd = f'no epon bind-onu seq {onu_num}' if itype.upper() == 'EPON' else f'no gpon bind-onu seq {onu_num}'
-            self._send_config(cmd, wait=2.0)
-            self._send_config('exit', wait=1.0)
-            self._send_config('exit', wait=1.0)
+            del_res = self._send_config(cmd, wait=2.0)
+            self._send_config('exit', wait=1.0)   # из interface-режима
+            self._send_config('exit', wait=1.0)   # из config-режима
+            if self._is_error_reply(del_res):
+                logger.error(f"OLT rejected '{cmd}' on {self.hostname}: {del_res!r}")
+                return False
             self._send_config('write', wait=3.0)
+            logger.info(f"✅ Deleted ONU {interface} ({cmd})")
             return True
         except Exception as e:
             logger.error(f"Error deleting ONU {interface}: {e}", exc_info=True)
