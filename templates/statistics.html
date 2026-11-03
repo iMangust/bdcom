@@ -180,7 +180,13 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='js/chart.umd.min.js') }}"></script>
+<script>
+// Fallback на CDN, если локальная копия недоступна (например, файл не скопирован при деплое)
+if (typeof Chart === 'undefined') {
+    document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"><\/script>');
+}
+</script>
 <script>
 (function () {
     'use strict';
@@ -473,7 +479,7 @@
 
     if (typeof Chart === 'undefined') {
         document.querySelectorAll('.chart-box, .chart-box-sm').forEach(el => {
-            el.insertAdjacentHTML('beforeend', '<div class="text-center text-muted small py-4">Библиотека графиков (Chart.js) недоступна — проверьте подключение к CDN или установите её локально.</div>');
+            el.insertAdjacentHTML('beforeend', '<div class="text-center text-muted small py-4">Библиотека графиков (Chart.js) недоступна — проверьте, что файл static/js/chart.umd.min.js на месте.</div>');
         });
     } else {
         loadAll();

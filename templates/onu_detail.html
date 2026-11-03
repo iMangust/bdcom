@@ -3,6 +3,9 @@
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/monitoring.css') }}">
 {% endblock %}
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/chart.umd.min.js') }}"></script>
+{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h4>
@@ -1220,7 +1223,7 @@ function showDeleteHelp() {
 
             if (typeof Chart === 'undefined') {
                 summaryEl.insertAdjacentHTML('afterend',
-                    '<div class="text-center text-muted small py-2">Библиотека графиков (Chart.js) недоступна — проверьте подключение к CDN.</div>');
+                    '<div class="text-center text-muted small py-2">Библиотека графиков (Chart.js) недоступна — проверьте, что файл static/js/chart.umd.min.js на месте.</div>');
                 return;
             }
             if (chart) chart.destroy();
@@ -1266,7 +1269,7 @@ function showDeleteHelp() {
         });
     });
 
-    // Chart.js подгружается асинхронно в extra_js — дожидаемся его перед стартом
+    // Chart.js подключается локально (static/js) в extra_js base.html — ждем load на всякий случай
     function start() { load(currentDays); }
     if (typeof Chart !== 'undefined') start();
     else window.addEventListener('load', start);
