@@ -1735,6 +1735,25 @@ ONUClientMAC.onu_interface.in_(onu_interfaces)
         logger.error(f"Error getting cached data for device {device_id}: {e}")
         return None
 
+def get_onu_event_history(session, device_id, interface, days=90, limit=500):
+    """История событий одной ONU (onu_history): up/down/переезды/создание/удаление."""
+    try:
+        since = now_local() - datetime.timedelta(days=days)
+        rows = session.query(
+            ONUHistory.action, ONUHistory.details, ONUHistory.mac, ONUHistory.created_at
+        ).filter(ONUIHistory.device_id == device_id,
+                 ONUIHistory.interface == interface,
+                 ONUIHistory.created_at >= since) \
+            .order_by(ONUIHistory.created_at.desc()).limit(limit).all()
+        return {'events': [{
+            'action': a, 'details': d, 'mac': m,
+            'created_at': ts.strftime('%Y-%m-%d %H:%M') if ts else None,
+        } for a, d, m, ts in rows], 'device_id': device_id, 'interface': interface}
+    except Exception as e:
+        logger.error(f"Error getting ONU event history: {e}", exc_info=True)
+        return {'events': [], 'error': INTERNAL_ERROR_MSG}
+
+
 def cleanup_old_data(session, days_to_keep=7):
     try:
         cutoff_date = now_local() - datetime.timedelta(days=days_to_keep)
@@ -1743,6 +1762,11 @@ ONUHistory.created_at < cutoff_date - datetime.timedelta(days=23)
 ))
         bulk_delete_query(session.query(ONUClientMAC).filter(
 ONUClientMAC.created_at < cutoff_date
+))
+        # Ротация временного ряда onu_state: таблица растёт по строке на ONU
+        # за каждый цикл опроса; глубже 90 дней ряд статистике не нужен.
+        bulk_delete_query(session.query(ONUState).filter(
+ONUState.recorded_at < now_local() - datetime.timedelta(days=90)
 ))
         session.commit()
     except Exception as e:
