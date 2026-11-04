@@ -60,6 +60,8 @@ def make_client(reply_map=None, default_reply=''):
     c.connect = lambda: True
     c.close = lambda: None
     c._send_config = fake_send_config
+    # _ensure_live_session -> _ensure_connected: в тестах эмулируем живое соединение
+    c._ensure_connected = lambda: True
     return c, sent
 
 
@@ -119,6 +121,74 @@ def test_parts_regex_groups():
     print('PASS test_parts_regex_groups / INTERFACE_RE intact')
 
 
+def test_update_description_ok():
+    c, sent = make_client(default_reply='OLT(config-if-GPON0/13)# ')
+    assert c.update_onu_description('GPON0/13', 'Иванов И.И. д.5 кв.12') is True
+    assert sent == ['config', 'interface GPON0/13',
+                    'description Иванов И.И. д.5 кв.12', 'exit', 'exit', 'write'], sent
+    print('PASS test_update_description_ok')
+
+
+def test_update_description_clear():
+    c, sent = make_client(default_reply='ok')
+    assert c.update_onu_description('GPON0/13', '') is True
+    assert 'no description' in sent
+    print('PASS test_update_description_clear')
+
+
+def test_update_description_rejects_control_chars():
+    c, sent = make_client(default_reply='ok')
+    assert c.update_onu_description('GPON0/13', 'абв\x00\x1b[31mгд\nconfig') is True
+    desc_cmd = [s for s in sent if s.startswith('description')]
+    assert len(desc_cmd) == 1
+    assert '\n' not in desc_cmd[0] and '\x1b' not in desc_cmd[0] and '\x00' not in desc_cmd[0]
+    # единственная команда 'config' — служебный вход в режим, инъекция не прошла
+    assert sent.count('config') == 1, sent
+    print('PASS test_update_description_rejects_control_chars')
+
+
+def test_update_description_olt_error_returns_false():
+    c, sent = make_client(reply_map={
+        'description Ivanov': "% Invalid input detected at '^' marker.",
+    }, default_reply='ok')
+    assert c.update_onu_description('GPON0/13', 'Ivanov') is False
+    assert 'write' not in sent, 'конфиг не должен сохраняться при отказе OLT'
+    print('PASS test_update_description_olt_error_returns_false')
+
+
+def test_update_description_invalid_interface():
+    c, sent = make_client()
+    assert c.update_onu_description('GPON0/13\nconfig terminal', 'x') is False
+    assert sent == []
+    print('PASS test_update_description_invalid_interface')
+
+
+def test_sync_descriptions_counts_only_accepted():
+    c, sent = make_client(reply_map={
+        'description BBB': "% Unknown command.",
+    }, default_reply='ok')
+    n = c.sync_onu_descriptions([
+        {'interface': 'GPON0/1', 'description': 'AAA'},
+        {'interface': 'GPON0/2', 'description': 'BBB'},
+        {'interface': 'bad iface', 'description': 'CCC'},
+    ])
+    assert n == 1, f'учтено только реально принятое OLT: {n}'
+    assert 'write' in sent
+    print('PASS test_sync_descriptions_counts_only_accepted')
+
+
+def test_write_ops_reuse_existing_session():
+    """Регрессия двойного SSH-подключения: write-операции должны переиспользовать
+    активную сессию (connect() из app.py), а не рвать её и создавать новую."""
+    c, sent = make_client(default_reply='ok')
+    connects = []
+    c.connect = lambda: (connects.append('connect'), True)[1]
+    c._ensure_connected = lambda: (connects.append('ensure'), True)[1]
+    assert c.delete_onu('GPON0/13:68') is True
+    assert connects == ['ensure'] and 'connect' not in connects, connects
+    print('PASS test_write_ops_reuse_existing_session')
+
+
 if __name__ == '__main__':
     test_gpon_ok()
     test_epon_ok()
@@ -127,4 +197,11 @@ if __name__ == '__main__':
     test_empty_reply_returns_false()
     test_whitespace_tolerated()
     test_parts_regex_groups()
+    test_update_description_ok()
+    test_update_description_clear()
+    test_update_description_rejects_control_chars()
+    test_update_description_olt_error_returns_false()
+    test_update_description_invalid_interface()
+    test_sync_descriptions_counts_only_accepted()
+    test_write_ops_reuse_existing_session()
     print('\nВсе тесты пройдены ✅')

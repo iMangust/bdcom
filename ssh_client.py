@@ -43,6 +43,12 @@ INTERFACE_PARTS_RE = re.compile(
     r'^(EPON|GPON)(\d+)/(\d+):(\d+)$', re.I
 )
 
+# Имя PON-интерфейса без номера ONU ('GPON0/13') — используется в
+# update_onu_description: UI передаёт полное имя ONU 'GPON0/13:68', а
+# batch-синк описаний — уже усечённое 'GPON0/13'. Строгие якоря +
+# fullmatch запрещают переводы строк (защита от инъекций команд).
+IFACE_NAME_RE = re.compile(r'^(EPON|GPON)\d+/\d+$', re.I)
+
 
 def is_valid_interface(interface) -> bool:
     """Проверка формата интерфейса перед отправкой в команду SSH."""
@@ -313,19 +319,54 @@ max_loops=50,
         finally:
             self.close()
 
+    def _ensure_live_session(self) -> bool:
+        """Гарантирует живое SSH-соединение, НЕ пересоздавая активное.
+
+        В отличие от connect(), который всегда рвёт старый session и создаёт
+        новый (см. начало connect()), этот метод переиспользует уже открытое
+        соединение — важно для write-операций, которые вызываются сразу после
+        ssh_client.connect() в app.py: раньше получалось два TCP/SSH-сессии
+        на одну операцию. Если соединение протухло, _ensure_connected()
+        выполнит reconnect сам.
+        """
+        return self._ensure_connected()
+
+    @staticmethod
+    def _onu_interface_name(interface) -> str:
+        """Возвращает имя PON-интерфейса для команды 'interface ...' или ''.
+
+        Принимает как полное имя ONU ('GPON0/13:68'), так и имя интерфейса
+        ('GPON0/13'); обе формы проверяются строгими fullmatch-паттернами,
+        поэтому переводы строк и прочие инъекции отсекаются.
+        """
+        s = str(interface or '').strip()
+        if IFACE_NAME_RE.fullmatch(s):
+            return s
+        m = INTERFACE_PARTS_RE.fullmatch(s)
+        if m:
+            itype, slot, port, _onu = m.groups()
+            return f'{itype}{slot}/{port}'
+        return ''
+
     def update_onu_description(self, interface: str, description: str) -> bool:
         logger.info(f"Updating description for {interface} to: '{description}'")
-        if not is_valid_interface(interface):
+        # Принимаем как полное имя ONU ('GPON0/13:68' — приходит из UI/onu_detail),
+        # так и имя интерфейса без ':N' ('GPON0/13' — из batch-синка описаний).
+        iface_name = self._onu_interface_name(interface)
+        if not iface_name:
             logger.error(f"Rejected invalid interface format: {interface!r}")
             return False
-        if not self.connect():
+        if not self._ensure_live_session():
             logger.error("Failed to connect to OLT")
             return False
         try:
-            self._send_config('config', wait=2.0)
-            result = self._send_config(f'interface {interface}', wait=1.5)
-            if not result:
-                logger.error(f"Failed to enter interface {interface}")
+            config_res = self._send_config('config', wait=2.0)
+            if self._is_error_reply(config_res):
+                logger.error(f"Failed to enter config mode for update_onu_description({interface}): {config_res!r}")
+                return False
+            result = self._send_config(f'interface {iface_name}', wait=1.5)
+            if not result or self._is_error_reply(result):
+                logger.error(f"Failed to enter interface {iface_name}: {result!r}")
                 self._send_config('exit', wait=1.0)
                 return False
             if description and description.strip():
@@ -340,9 +381,12 @@ max_loops=50,
                 cmd = f'description {safe_desc}'
             else:
                 cmd = 'no description'
-            self._send_config(cmd, wait=1.5)
+            desc_res = self._send_config(cmd, wait=1.5)
             self._send_config('exit', wait=1.0)
             self._send_config('exit', wait=1.0)
+            if not desc_res or self._is_error_reply(desc_res):
+                logger.error(f"OLT rejected '{cmd}' on {interface}: {desc_res!r}")
+                return False
             self._send_config('write', wait=3.0)
             return True
         except Exception as e:
@@ -354,24 +398,29 @@ max_loops=50,
     def sync_onu_descriptions(self, sync_list: List[Dict[str, str]]) -> int:
         if not sync_list:
             return 0
-        if not self.connect():
+        if not self._ensure_live_session():
             logger.error("Failed to connect for description sync")
             return 0
         synced_count = 0
         try:
-            self._send_config('config', wait=2.0)
+            config_res = self._send_config('config', wait=2.0)
+            if self._is_error_reply(config_res):
+                logger.error(f"Failed to enter config mode for desc sync: {config_res!r}")
+                return 0
             for item in sync_list:
                 interface = item.get('interface')
                 description = item.get('description', '').strip()
                 if not interface or not description:
                     continue
-                # Защита от инъекции команд через имя интерфейса (см. INTERFACE_RE)
-                if not is_valid_interface(interface):
+                # Защита от инъекции команд через имя интерфейса (см. _onu_interface_name).
+                # Принимаем и полное ONU-имя 'GPON0/13:68', и имя интерфейса 'GPON0/13'.
+                iface_name = self._onu_interface_name(interface)
+                if not iface_name:
                     logger.warning(f"Skipping invalid interface in sync: {interface!r}")
                     continue
-                result = self._send_config(f'interface {interface}', wait=1.0)
-                if not result:
-                    logger.warning(f"Failed to enter interface {interface} for desc sync")
+                result = self._send_config(f'interface {iface_name}', wait=1.0)
+                if not result or self._is_error_reply(result):
+                    logger.warning(f"Failed to enter interface {iface_name} for desc sync: {result!r}")
                     self._send_config('exit', wait=0.5)
                     continue
                 # Defense-in-depth (этап 25): вырезаем ВСЕ управляющие символы
@@ -380,8 +429,11 @@ max_loops=50,
                 # строки команд. Тот же приём, что в update_onu_description.
                 safe_desc = ' '.join(re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', description).split())[:100]
                 cmd = f'description {safe_desc}'
-                self._send_config(cmd, wait=1.0)
+                desc_res = self._send_config(cmd, wait=1.0)
                 self._send_config('exit', wait=0.5)
+                if not desc_res or self._is_error_reply(desc_res):
+                    logger.warning(f"OLT rejected description on {interface}: {desc_res!r}")
+                    continue
                 synced_count += 1
                 logger.info(f"✅ Synced description for {interface}: '{safe_desc}'")
             self._send_config('exit', wait=1.0)
@@ -424,7 +476,7 @@ max_loops=50,
             return False
         itype, slot, port, onu_num = match.groups()
         iface_name = f'{itype}{slot}/{port}'
-        if not self.connect():
+        if not self._ensure_live_session():
             return False
         try:
             config_res = self._send_config('config', wait=2.0)
