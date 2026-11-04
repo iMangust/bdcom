@@ -1,6 +1,7 @@
 import re
 import time
 import logging
+import contextlib
 from typing import List, Dict, Any, Optional
 from netmiko import ConnectHandler
 from netmiko.exceptions import (
@@ -331,6 +332,30 @@ max_loops=50,
         """
         return self._ensure_connected()
 
+    @contextlib.contextmanager
+    def _config_session(self):
+        """Входит в config-режим; при любом выходе оставляет чистый привилегированный режим.
+
+        Гарантирует парный `exit` даже при исключении внутри try-блока — раньше
+        досрочные return/raise оставляли сессию в config/interface-режиме, и
+        каждая следующая команда на этом же соединении выполнялась «в чужом»
+        контексте (например, show или повторный 'config' портили состояние CLI).
+        yield True если удалось войти в config-режим, иначе False.
+        """
+        in_config = False
+        try:
+            res = self._send_config('config', wait=2.0)
+            in_config = not self._is_error_reply(res)
+            if not in_config:
+                logger.error(f"Failed to enter config mode on {self.hostname}: {res!r}")
+            yield in_config
+        finally:
+            if in_config:
+                try:
+                    self._send_config('exit', wait=1.0)
+                except Exception:
+                    pass
+
     @staticmethod
     def _onu_interface_name(interface) -> str:
         """Возвращает имя PON-интерфейса для команды 'interface ...' или ''.
@@ -360,30 +385,28 @@ max_loops=50,
             logger.error("Failed to connect to OLT")
             return False
         try:
-            config_res = self._send_config('config', wait=2.0)
-            if self._is_error_reply(config_res):
-                logger.error(f"Failed to enter config mode for update_onu_description({interface}): {config_res!r}")
-                return False
-            result = self._send_config(f'interface {iface_name}', wait=1.5)
-            if not result or self._is_error_reply(result):
-                logger.error(f"Failed to enter interface {iface_name}: {result!r}")
-                self._send_config('exit', wait=1.0)
-                return False
-            if description and description.strip():
-                # Defense-in-depth (этап 25): вырезаем ВСЕ управляющие символы
-                # C0/C1, включая U+0085 NEL — Cisco/Comware-парсеры OLT режут
-                # ввод по NEL так же, как по \n, что позволяло инъекцию второй
-                # строки команд. Whitlist в sanitize_description (app.py) тоже
-                # их отсекает, но ssh_client должен быть безопасен и сам по себе.
-                description = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', description)
-                safe_desc = description.strip()[:100]
-                safe_desc = ' '.join(safe_desc.split())
-                cmd = f'description {safe_desc}'
-            else:
-                cmd = 'no description'
-            desc_res = self._send_config(cmd, wait=1.5)
-            self._send_config('exit', wait=1.0)
-            self._send_config('exit', wait=1.0)
+            with self._config_session() as in_config:
+                if not in_config:
+                    return False
+                result = self._send_config(f'interface {iface_name}', wait=1.5)
+                if not result or self._is_error_reply(result):
+                    logger.error(f"Failed to enter interface {iface_name}: {result!r}")
+                    self._send_config('exit', wait=1.0)  # из interface-режима
+                    return False
+                if description and description.strip():
+                    # Defense-in-depth (этап 25): вырезаем ВСЕ управляющие символы
+                    # C0/C1, включая U+0085 NEL — Cisco/Comware-парсеры OLT режут
+                    # ввод по NEL так же, как по \n, что позволяло инъекцию второй
+                    # строки команд. Whitlist в sanitize_description (app.py) тоже
+                    # их отсекает, но ssh_client должен быть безопасен и сам по себе.
+                    description = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', description)
+                    safe_desc = description.strip()[:100]
+                    safe_desc = ' '.join(safe_desc.split())
+                    cmd = f'description {safe_desc}'
+                else:
+                    cmd = 'no description'
+                desc_res = self._send_config(cmd, wait=1.5)
+                self._send_config('exit', wait=1.0)  # из interface-режима
             if not desc_res or self._is_error_reply(desc_res):
                 logger.error(f"OLT rejected '{cmd}' on {interface}: {desc_res!r}")
                 return False
@@ -404,40 +427,38 @@ max_loops=50,
             return 0
         synced_count = 0
         try:
-            config_res = self._send_config('config', wait=2.0)
-            if self._is_error_reply(config_res):
-                logger.error(f"Failed to enter config mode for desc sync: {config_res!r}")
-                return 0
-            for item in sync_list:
-                interface = item.get('interface')
-                description = item.get('description', '').strip()
-                if not interface or not description:
-                    continue
-                # Защита от инъекции команд через имя интерфейса (см. _onu_interface_name).
-                # Принимаем и полное ONU-имя 'GPON0/13:68', и имя интерфейса 'GPON0/13'.
-                iface_name = self._onu_interface_name(interface)
-                if not iface_name:
-                    logger.warning(f"Skipping invalid interface in sync: {interface!r}")
-                    continue
-                result = self._send_config(f'interface {iface_name}', wait=1.0)
-                if not result or self._is_error_reply(result):
-                    logger.warning(f"Failed to enter interface {iface_name} for desc sync: {result!r}")
+            with self._config_session() as in_config:
+                if not in_config:
+                    return 0
+                for item in sync_list:
+                    interface = item.get('interface')
+                    description = item.get('description', '').strip()
+                    if not interface or not description:
+                        continue
+                    # Защита от инъекции команд через имя интерфейса (см. _onu_interface_name).
+                    # Принимаем и полное ONU-имя 'GPON0/13:68', и имя интерфейса 'GPON0/13'.
+                    iface_name = self._onu_interface_name(interface)
+                    if not iface_name:
+                        logger.warning(f"Skipping invalid interface in sync: {interface!r}")
+                        continue
+                    result = self._send_config(f'interface {iface_name}', wait=1.0)
+                    if not result or self._is_error_reply(result):
+                        logger.warning(f"Failed to enter interface {iface_name} for desc sync: {result!r}")
+                        self._send_config('exit', wait=0.5)
+                        continue
+                    # Defense-in-depth (этап 25): вырезаем ВСЕ управляющие символы
+                    # C0/C1, включая U+0085 NEL — Cisco/Comware-парсеры OLT режут
+                    # ввод по NEL так же, как по \n, что позволяло инъекцию второй
+                    # строки команд. Тот же приём, что в update_onu_description.
+                    safe_desc = ' '.join(re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', description).split())[:100]
+                    cmd = f'description {safe_desc}'
+                    desc_res = self._send_config(cmd, wait=1.0)
                     self._send_config('exit', wait=0.5)
-                    continue
-                # Defense-in-depth (этап 25): вырезаем ВСЕ управляющие символы
-                # C0/C1, включая U+0085 NEL — Cisco/Comware-парсеры OLT режут
-                # ввод по NEL так же, как по \n, что позволяло инъекцию второй
-                # строки команд. Тот же приём, что в update_onu_description.
-                safe_desc = ' '.join(re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', description).split())[:100]
-                cmd = f'description {safe_desc}'
-                desc_res = self._send_config(cmd, wait=1.0)
-                self._send_config('exit', wait=0.5)
-                if not desc_res or self._is_error_reply(desc_res):
-                    logger.warning(f"OLT rejected description on {interface}: {desc_res!r}")
-                    continue
-                synced_count += 1
-                logger.info(f"✅ Synced description for {interface}: '{safe_desc}'")
-            self._send_config('exit', wait=1.0)
+                    if not desc_res or self._is_error_reply(desc_res):
+                        logger.warning(f"OLT rejected description on {interface}: {desc_res!r}")
+                        continue
+                    synced_count += 1
+                    logger.info(f"✅ Synced description for {interface}: '{safe_desc}'")
             write_res = self._send_config('write', wait=3.0)
             if self._is_error_reply(write_res):
                 logger.error(f"OLT rejected 'write' after desc sync on {self.hostname}: {write_res!r}")
@@ -458,8 +479,17 @@ max_loops=50,
             return False
         low = output.lower()
         markers = ('% err', '% invalid', '% unknown', '% unrecogniz',
-                   'error:', 'invalid input', 'unknown command')
-        return any(m in low for m in markers)
+                   '% permission', 'error:', 'invalid input', 'unknown command')
+        if any(m in low for m in markers):
+            return True
+        # Ответы BDCOM-подобных CLI содержат маркер позиции ошибки '^' на
+        # отдельной строке (например: "                 ^\n"). Обычные show-
+        # команды через _send_config не вызываются, поэтому ложных срабатываний
+        # на многострочный вывод здесь нет.
+        for line in output.splitlines():
+            if line.strip() == '^':
+                return True
+        return False
 
     def delete_onu(self, interface: str) -> bool:
         """Удаляет ONU с OLT по имени интерфейса вида 'GPON0/13:68' / 'EPON1/2:7'.
@@ -485,19 +515,17 @@ max_loops=50,
         if not self._ensure_live_session():
             return False
         try:
-            config_res = self._send_config('config', wait=2.0)
-            if self._is_error_reply(config_res):
-                logger.error(f"Failed to enter config mode for delete_onu({interface}): {config_res!r}")
-                return False
-            result = self._send_config(f'interface {iface_name}', wait=1.5)
-            if not result or self._is_error_reply(result):
-                logger.error(f"Failed to enter interface {iface_name}: {result!r}")
-                self._send_config('exit', wait=1.0)
-                return False
-            cmd = f'no epon bind-onu seq {onu_num}' if itype.upper() == 'EPON' else f'no gpon bind-onu seq {onu_num}'
-            del_res = self._send_config(cmd, wait=2.0)
-            self._send_config('exit', wait=1.0)   # из interface-режима
-            self._send_config('exit', wait=1.0)   # из config-режима
+            with self._config_session() as in_config:
+                if not in_config:
+                    return False
+                result = self._send_config(f'interface {iface_name}', wait=1.5)
+                if not result or self._is_error_reply(result):
+                    logger.error(f"Failed to enter interface {iface_name}: {result!r}")
+                    self._send_config('exit', wait=1.0)  # из interface-режима
+                    return False
+                cmd = f'no epon bind-onu seq {onu_num}' if itype.upper() == 'EPON' else f'no gpon bind-onu seq {onu_num}'
+                del_res = self._send_config(cmd, wait=2.0)
+                self._send_config('exit', wait=1.0)   # из interface-режима
             if self._is_error_reply(del_res):
                 logger.error(f"OLT rejected '{cmd}' on {self.hostname}: {del_res!r}")
                 return False

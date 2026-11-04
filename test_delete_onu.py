@@ -230,6 +230,56 @@ def test_write_ops_reuse_existing_session():
     print('PASS test_write_ops_reuse_existing_session')
 
 
+def test_caret_marker_is_error():
+    """BDCOM-подобные CLI отмечают позицию синтаксической ошибки строкой '^'."""
+    assert BDCOMSSHClient._is_error_reply("        ^\n% Invalid") is True
+    assert BDCOMSSHClient._is_error_reply("some output\n     ^") is True
+    # одиночная '^' внутри текста (не на отдельной строке) ошибкой не считается
+    assert BDCOMSSHClient._is_error_reply('desc: 2+2^4 house') is False
+    assert BDCOMSSHClient._is_error_reply('GPON-OLT(config)#') is False
+    print('PASS test_caret_marker_is_error')
+
+
+def test_config_mode_exit_balanced_on_success():
+    """На успешном пути ровно один 'config' и ровно один парный 'exit' из _config_session;
+    остальные exit — выходы из interface-режима."""
+    c, sent = make_client(default_reply='ok')
+    assert c.delete_onu('GPON0/13:68') is True
+    assert sent.count('config') == 1
+    assert sent.count('exit') == 2, sent  # interface + config (из контекст-менеджера)
+    assert sent[-1] == 'write', sent
+    print('PASS test_config_mode_exit_balanced_on_success')
+
+
+def test_config_mode_restored_after_exception():
+    """Если в середине операции бросает исключение, сессия всё равно выходит
+    из config-режима (парный exit), а метод возвращает False."""
+    c, sent = make_client(default_reply='ok')
+
+    def exploding_send(command, wait=1.5):
+        sent.append(command)
+        if command.startswith('no gpon bind-onu'):
+            raise RuntimeError('channel reset')
+        return 'ok'
+
+    c._send_config = exploding_send
+    assert c.delete_onu('GPON0/13:68') is False
+    assert sent[0] == 'config'
+    assert 'exit' in sent[sent.index('interface GPON0/13'):], \
+        f'после исключения config-режим не закрыт: {sent}'
+    assert 'write' not in sent
+    print('PASS test_config_mode_restored_after_exception')
+
+
+def test_failed_config_entry_does_not_run_interface_cmds():
+    """Если OLT не пустил в config-режим, команды interface/description не отправляются."""
+    c, sent = make_client(reply_map={'config': '% Permission denied'}, default_reply='ok')
+    assert c.update_onu_description('GPON0/13', 'AAA') is False
+    assert sent == ['config'], sent
+    assert 'write' not in sent
+    print('PASS test_failed_config_entry_does_not_run_interface_cmds')
+
+
 if __name__ == '__main__':
     test_gpon_ok()
     test_epon_ok()
@@ -249,4 +299,8 @@ if __name__ == '__main__':
     test_update_description_keeps_session_open()
     test_sync_descriptions_keeps_session_open()
     test_write_ops_reuse_existing_session()
+    test_caret_marker_is_error()
+    test_config_mode_exit_balanced_on_success()
+    test_config_mode_restored_after_exception()
+    test_failed_config_entry_does_not_run_interface_cmds()
     print('\nВсе тесты пройдены ✅')
