@@ -2693,9 +2693,12 @@ model=device_config.get('model', '3310')
                 logger.info("✅ ONU физически удалена через SSH")
                 ssh_deleted = True
             else:
-                logger.warning("⚠️ SSH delete_onu вернул False (возможно, уже удалена)")
-                ssh_deleted = True
-            add_step('Сохранение конфигурации (write)')
+                # delete_onu теперь возвращает False только при НАСТОЯЩЕМ сбое
+                # (отказ команды, ошибка записи конфигурации, потеря связи) —
+                # раньше False мог означать 'уже удалена' и это молча считалось
+                # успехом. Теперь блокируем cleanup до выяснения причины.
+                logger.error(f"❌ SSH delete_onu({interface}) вернул False на {device_config['name']}")
+                ssh_error = "Устройство отклонило команду удаления или не сохранило конфигурацию"
         else:
             ssh_error = f"Не удалось подключиться к {device_config['name']}"
             logger.error(f"❌ {ssh_error}")

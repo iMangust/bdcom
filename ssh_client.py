@@ -387,13 +387,14 @@ max_loops=50,
             if not desc_res or self._is_error_reply(desc_res):
                 logger.error(f"OLT rejected '{cmd}' on {interface}: {desc_res!r}")
                 return False
-            self._send_config('write', wait=3.0)
+            write_res = self._send_config('write', wait=3.0)
+            if self._is_error_reply(write_res):
+                logger.error(f"OLT rejected 'write' after description update on {interface}: {write_res!r}")
+                return False
             return True
         except Exception as e:
             logger.error(f"Error updating description for {interface}: {e}", exc_info=True)
             return False
-        finally:
-            self.close()
 
     def sync_onu_descriptions(self, sync_list: List[Dict[str, str]]) -> int:
         if not sync_list:
@@ -437,12 +438,12 @@ max_loops=50,
                 synced_count += 1
                 logger.info(f"✅ Synced description for {interface}: '{safe_desc}'")
             self._send_config('exit', wait=1.0)
-            self._send_config('write', wait=3.0)
+            write_res = self._send_config('write', wait=3.0)
+            if self._is_error_reply(write_res):
+                logger.error(f"OLT rejected 'write' after desc sync on {self.hostname}: {write_res!r}")
             logger.info(f"Successfully synced {synced_count}/{len(sync_list)} descriptions")
         except Exception as e:
             logger.error(f"Error during batch description sync: {e}", exc_info=True)
-        finally:
-            self.close()
         return synced_count
 
     @staticmethod
@@ -464,9 +465,14 @@ max_loops=50,
         """Удаляет ONU с OLT по имени интерфейса вида 'GPON0/13:68' / 'EPON1/2:7'.
 
         Возвращает True только если команда `no ... bind-onu seq N` реально
-        применена. Ответ OLT проверяется на маркеры ошибки ('%', 'error',
-        'invalid', 'unknown') — раньше True возвращался unconditional, и
-        UI считал ONU удалённой даже при отказе конфигурирования.
+        применена (ответ проверен на маркеры ошибки) И конфигурация сохранена
+        (`write` прошёл без отказа). Раньше True возвращался unconditional,
+        и UI считал ONU удалённой даже при `% Invalid input` от устройства.
+
+        Соединение НЕ закрывается в finally: вызывающий код (app.py) сам
+        управляет жизненным циклом клиента через connect()/close(). Прежний
+        `finally: self.close()` рвал сессию, уже открытую API-хэндлером, и
+        приводил к повторному TCP/SSH-подключению на каждую write-операцию.
         """
         logger.info(f"Deleting ONU {interface}")
         # Валидация формата ДО подключения (защита от инъекций — см. INTERFACE_PARTS_RE)
@@ -495,14 +501,15 @@ max_loops=50,
             if self._is_error_reply(del_res):
                 logger.error(f"OLT rejected '{cmd}' on {self.hostname}: {del_res!r}")
                 return False
-            self._send_config('write', wait=3.0)
+            write_res = self._send_config('write', wait=3.0)
+            if self._is_error_reply(write_res):
+                logger.error(f"OLT rejected 'write' after deleting ONU {interface} on {self.hostname}: {write_res!r}")
+                return False
             logger.info(f"✅ Deleted ONU {interface} ({cmd})")
             return True
         except Exception as e:
             logger.error(f"Error deleting ONU {interface}: {e}", exc_info=True)
             return False
-        finally:
-            self.close()
 
     def save_running_config(self) -> str:
         if not self.connect():

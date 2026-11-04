@@ -177,6 +177,47 @@ def test_sync_descriptions_counts_only_accepted():
     print('PASS test_sync_descriptions_counts_only_accepted')
 
 
+def test_write_failure_returns_false():
+    """Регрессия: сбой 'write' теперь делает операцию неуспешной (ONU осталась
+    в running-config, но не сохранена — UI должен показать ошибку, а не успех)."""
+    c, sent = make_client(reply_map={
+        'write': "% Error: flash is full, cannot save configuration",
+    }, default_reply='ok')
+    assert c.delete_onu('GPON0/13:68') is False
+    assert 'write' in sent  # команду пробовали выполнить
+    print('PASS test_write_failure_returns_false')
+
+
+def test_delete_onu_keeps_session_open():
+    """delete_onu НЕ должен закрывать сессию сам — жизненным циклом клиента
+    управляет вызывающий код (app.py: connect() ... finally: close()).
+    Прежний `finally: self.close()` приводил к двойному подключению."""
+    c, sent = make_client(default_reply='ok')
+    closed = []
+    c.close = lambda: closed.append('closed')
+    assert c.delete_onu('GPON0/13:68') is True
+    assert closed == [], f'сессия закрыта изнутри метода: {closed}'
+    print('PASS test_delete_onu_keeps_session_open')
+
+
+def test_update_description_keeps_session_open():
+    c, sent = make_client(default_reply='ok')
+    closed = []
+    c.close = lambda: closed.append('closed')
+    assert c.update_onu_description('GPON0/13', 'AAA') is True
+    assert closed == []
+    print('PASS test_update_description_keeps_session_open')
+
+
+def test_sync_descriptions_keeps_session_open():
+    c, sent = make_client(default_reply='ok')
+    closed = []
+    c.close = lambda: closed.append('closed')
+    n = c.sync_onu_descriptions([{'interface': 'GPON0/1', 'description': 'AAA'}])
+    assert n == 1 and closed == []
+    print('PASS test_sync_descriptions_keeps_session_open')
+
+
 def test_write_ops_reuse_existing_session():
     """Регрессия двойного SSH-подключения: write-операции должны переиспользовать
     активную сессию (connect() из app.py), а не рвать её и создавать новую."""
@@ -203,5 +244,9 @@ if __name__ == '__main__':
     test_update_description_olt_error_returns_false()
     test_update_description_invalid_interface()
     test_sync_descriptions_counts_only_accepted()
+    test_write_failure_returns_false()
+    test_delete_onu_keeps_session_open()
+    test_update_description_keeps_session_open()
+    test_sync_descriptions_keeps_session_open()
     test_write_ops_reuse_existing_session()
     print('\nВсе тесты пройдены ✅')
